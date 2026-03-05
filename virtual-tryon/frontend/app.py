@@ -27,6 +27,11 @@ from preprocess.humanparsing.run_parsing import Parsing
 from preprocess.openpose.run_openpose import OpenPose
 from preprocess.openpose.annotator.util import resize_image, HWC3
 
+# DensePose: used by official IDM-VTON for pose image generation
+# apply_net uses detectron2 + densepose to produce dp_segm visualization
+import apply_net
+from detectron2.data.detection_utils import convert_PIL_to_numpy, _apply_exif_orientation
+
 app = Flask(__name__)
 
 # AWS config
@@ -52,6 +57,10 @@ GPU_ID = int(os.getenv("gpu_id", "0"))
 parsing_model = Parsing(GPU_ID)
 openpose_model = OpenPose(GPU_ID)
 
+# DensePose config — matches official IDM-VTON Gradio demo exactly
+DENSEPOSE_CONFIG = os.path.join(PARENT_DIR, "configs", "densepose_rcnn_R_50_FPN_s1x.yaml")
+DENSEPOSE_MODEL = os.path.join(PARENT_DIR, "ckpt", "densepose", "model_final_162be9.pkl")
+
 # Store telegram photos on disk
 TELEGRAM_PHOTOS_DIR = os.path.join(os.path.dirname(__file__), "telegram_photos")
 os.makedirs(TELEGRAM_PHOTOS_DIR, exist_ok=True)
@@ -59,9 +68,6 @@ os.makedirs(TELEGRAM_PHOTOS_DIR, exist_ok=True)
 
 # ============================================================
 # Mask generation from IDM-VTON official utils_mask.py
-# (get_mask_location + helpers)
-# This uses keypoints + parsing to create proper inpainting masks
-# exactly as the IDM-VTON Gradio demo does.
 # ============================================================
 
 label_map = {
@@ -107,17 +113,6 @@ def get_mask_location(model_type, category, model_parse, keypoint, width=384, he
     """
     Generate inpainting mask from parsing + keypoints.
     Ported from IDM-VTON official gradio_demo/utils_mask.py.
-
-    Args:
-        model_type: 'hd' or 'dc' (controls arm line width)
-        category: 'upper_body', 'lower_body', or 'dresses'
-        model_parse: PIL Image (palette mode) from parsing model
-        keypoint: dict with 'pose_keypoints_2d' from OpenPose
-        width, height: mask dimensions (default 384x512)
-
-    Returns:
-        mask: PIL Image (white=inpaint region, black=keep)
-        mask_gray: PIL Image (gray visualization)
     """
     im_parse = model_parse.resize((width, height), Image.NEAREST)
     parse_array = np.array(im_parse)
@@ -171,10 +166,8 @@ def get_mask_location(model_type, category, model_parse, keypoint, width=384, he
     else:
         raise NotImplementedError
 
-    # Load pose points
     pose_data = keypoint["pose_keypoints_2d"]
-    pose_data = np.array(pose_data)
-    pose_data = pose_data.reshape((-1, 2))
+    pose_data = np.array(pose_data).reshape((-1, 2))
 
     im_arms_left = Image.new('L', (width, height))
     im_arms_right = Image.new('L', (width, height))
@@ -332,68 +325,54 @@ def upload_pil_to_s3(pil_image, bucket, key, fmt="PNG"):
     s3.put_object(Bucket=bucket, Key=key, Body=buf, ContentType=f"image/{fmt.lower()}")
 
 
-# Category mapping: our UI categories -> IDM-VTON get_mask_location categories
-CATEGORY_MAP = {
-    "upper": "upper_body",
-    "lower": "lower_body",
-    "dress": "dresses",
-    "upper_lower": "upper_body",  # first pass is upper
-}
-
-
 def preprocess_person_image(pil_image, user_id, request_id):
     """
-    Run the full IDM-VTON preprocessing pipeline on a person image.
-    Matches the official Gradio demo's start_tryon() flow exactly:
+    Run the full IDM-VTON preprocessing pipeline — matches Gradio demo exactly:
 
-    1. Resize person image to 768x1024
-    2. Run parsing at 384x512 (Parsing class expects a directory)
-    3. Run OpenPose at 384x512 to get keypoints
-    4. Call get_mask_location() with parsing + keypoints for each category
-       (this is the key difference from before — uses keypoint-guided arm masks,
-        dilation, neck handling, hole filling, and refinement)
-    5. Get detected_map from OpenposeDetector for pose visualization
+    1. Resize to 768x1024
+    2. Parsing at 384x512 → get labels + keypoints for mask generation
+    3. OpenPose at 384x512 → get keypoints for mask generation
+    4. get_mask_location() → proper inpainting masks with arm/neck handling
+    5. DensePose at 384x512 → dp_segm visualization for pose image
+       (This is the key difference — Gradio demo uses DensePose, not OpenPose skeleton)
     6. Upload everything to S3
     """
-    # Resize to standard IDM-VTON input size
     pil_image = pil_image.resize((768, 1024))
     prefix = f"{user_id}/{request_id}"
 
     # --- Step 1: Human Parsing at 384x512 ---
-    # The Gradio demo does: model_parse, _ = parsing_model(human_img.resize((384,512)))
-    # Parsing expects a directory path, so we save the resized image to a temp dir
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = os.path.join(tmpdir, "input.jpg")
         pil_image.resize((384, 512)).save(img_path)
         parsed_image, face_mask = parsing_model(tmpdir)
 
-    # --- Step 2: OpenPose keypoints at 384x512 ---
-    # The Gradio demo does: keypoints = openpose_model(human_img.resize((384,512)))
+    # --- Step 2: OpenPose keypoints at 384x512 (for mask generation only) ---
     keypoints = openpose_model(pil_image.resize((384, 512)))
 
-    # --- Step 3: Get detected_map (pose visualization) ---
-    # OpenPose.__call__ discards detected_map, so we call preprocessor directly
-    # Same input prep as OpenPose.__call__: HWC3 -> resize_image(input, 384)
-    input_np = np.asarray(pil_image).copy()
-    input_np = HWC3(input_np)
-    input_np = resize_image(input_np, 384)
+    # --- Step 3: DensePose pose image at 384x512 ---
+    # This is exactly what the Gradio demo does:
+    #   human_img_arg = _apply_exif_orientation(human_img.resize((384,512)))
+    #   human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
+    #   args = apply_net.create_argument_parser().parse_args(('show', config, model, 'dp_segm', ...))
+    #   pose_img = args.func(args, human_img_arg)
+    #   pose_img = pose_img[:,:,::-1]  # BGR to RGB
+    human_img_for_densepose = _apply_exif_orientation(pil_image.resize((384, 512)))
+    human_img_bgr = convert_PIL_to_numpy(human_img_for_densepose, format="BGR")
 
-    with torch.no_grad():
-        _, detected_map = openpose_model.preprocessor(input_np, hand_and_face=False)
-
-    # detected_map is BGR (cv2 convention), convert to RGB for PIL
-    pose_img_rgb = cv2.cvtColor(detected_map, cv2.COLOR_BGR2RGB)
-    pose_img_resized = cv2.resize(pose_img_rgb, (768, 1024), interpolation=cv2.INTER_LANCZOS4)
-    pose_img = Image.fromarray(pose_img_resized)
+    args = apply_net.create_argument_parser().parse_args((
+        'show', DENSEPOSE_CONFIG, DENSEPOSE_MODEL, 'dp_segm',
+        '-v', '--opts', 'MODEL.DEVICE', 'cuda'
+    ))
+    pose_result = args.func(args, human_img_bgr)
+    # pose_result is BGR, convert to RGB then resize to 768x1024
+    pose_img_rgb = pose_result[:, :, ::-1]
+    pose_img = Image.fromarray(pose_img_rgb).resize((768, 1024))
 
     # --- Step 4: Generate masks using get_mask_location ---
-    # This is the official IDM-VTON approach: keypoint-guided arm masks,
-    # dilation, neck handling, hole filling, and refinement.
     upper_mask, _ = get_mask_location('hd', 'upper_body', parsed_image, keypoints)
     lower_mask, _ = get_mask_location('hd', 'lower_body', parsed_image, keypoints)
     dress_mask, _ = get_mask_location('hd', 'dresses', parsed_image, keypoints)
 
-    # Resize masks to 768x1024 to match the image size
     upper_mask = upper_mask.resize((768, 1024), Image.NEAREST)
     lower_mask = lower_mask.resize((768, 1024), Image.NEAREST)
     dress_mask = dress_mask.resize((768, 1024), Image.NEAREST)
@@ -463,7 +442,6 @@ def submit_tryon():
         user_id = str(uuid.uuid4())[:8]
         request_id = str(uuid.uuid4())[:8]
 
-        # Get person image from upload or telegram
         telegram_photo = request.form.get("telegram_photo")
         if telegram_photo:
             photo_path = os.path.join(TELEGRAM_PHOTOS_DIR, telegram_photo)
@@ -481,17 +459,14 @@ def submit_tryon():
             return jsonify({"error": "No garment image provided"}), 400
         garment_img = Image.open(garment_file.stream).convert("RGB")
 
-        # Run full IDM-VTON preprocessing pipeline
         preprocess_person_image(person_img, user_id, request_id)
 
-        # Upload garment to product bucket
         garment_key = f"{user_id}/{request_id}/garment.jpg"
         buf = BytesIO()
         garment_img.save(buf, format="JPEG")
         buf.seek(0)
         s3.put_object(Bucket=PRODUCT_BUCKET, Key=garment_key, Body=buf, ContentType="image/jpeg")
 
-        # Create DynamoDB record
         table.put_item(Item={
             "user_id": user_id,
             "request_id": request_id,
@@ -504,7 +479,6 @@ def submit_tryon():
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
 
-        # Send SQS message
         sqs.send_message(
             QueueUrl=QUEUE_URL,
             MessageBody=json.dumps({"user_id": user_id, "request_id": request_id}),
