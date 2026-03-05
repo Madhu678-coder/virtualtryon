@@ -223,9 +223,8 @@
                         btn.textContent = 'Try On';
                         return;
                     }
-                    document.getElementById('resultPlaceholder').textContent = 'Generating...';
-                    document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Generating try-on result...';
-                    if (data.preprocessed) { showPreprocessed(data.preprocessed); }
+                    document.getElementById('resultPlaceholder').textContent = 'Preprocessing...';
+                    document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Preprocessing image (this may take a minute)...';
                     pollStatus(data.user_id, data.request_id);
                 })
                 .catch(function(err) {
@@ -236,10 +235,26 @@
         }
 
         function pollStatus(userId, requestId) {
+            var preprocessShown = false;
             var interval = setInterval(function() {
                 fetch('/api/status/' + userId + '/' + requestId)
                     .then(function(resp) { return resp.json(); })
                     .then(function(data) {
+                        // Show preprocessed images once preprocessing is done
+                        if (data.pre_processing_status === 'COMPLETED' && !preprocessShown && data.preprocessed) {
+                            preprocessShown = true;
+                            showPreprocessed(data.preprocessed);
+                            document.getElementById('resultPlaceholder').textContent = 'Generating try-on...';
+                            document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Preprocessing done. Running virtual try-on...';
+                        }
+                        if (data.pre_processing_status === 'FAILED') {
+                            clearInterval(interval);
+                            document.getElementById('statusBar').innerHTML = '<span class="error">Preprocessing failed. Please try again.</span>';
+                            document.getElementById('resultPlaceholder').textContent = 'Failed';
+                            document.getElementById('submitBtn').disabled = false;
+                            document.getElementById('submitBtn').textContent = 'Try On';
+                            return;
+                        }
                         if (data.status === 'COMPLETED' && data.result_url) {
                             clearInterval(interval);
                             document.getElementById('statusBar').innerHTML = '<span class="success">Done!</span>';
@@ -251,7 +266,7 @@
                             document.getElementById('submitBtn').textContent = 'Try On';
                         } else if (data.status === 'FAILED') {
                             clearInterval(interval);
-                            document.getElementById('statusBar').innerHTML = '<span class="error">Processing failed. Please try again.</span>';
+                            document.getElementById('statusBar').innerHTML = '<span class="error">Try-on processing failed. Please try again.</span>';
                             document.getElementById('resultPlaceholder').textContent = 'Failed';
                             document.getElementById('submitBtn').disabled = false;
                             document.getElementById('submitBtn').textContent = 'Try On';
