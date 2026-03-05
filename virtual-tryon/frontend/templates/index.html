@@ -6,47 +6,72 @@
     <title>Virtual Try-On</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; }
-        .container { max-width: 900px; margin: 40px auto; padding: 0 20px; }
-        h1 { text-align: center; margin-bottom: 30px; font-size: 28px; color: #1a1a1a; }
-        .upload-section { display: flex; gap: 20px; margin-bottom: 20px; }
-        .upload-box { flex: 1; background: #fff; border: 2px dashed #ccc; border-radius: 12px; padding: 30px; text-align: center; cursor: pointer; transition: border-color 0.2s; position: relative; min-height: 250px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; }
+        .container { max-width: 1000px; margin: 30px auto; padding: 0 20px; }
+        h1 { text-align: center; margin-bottom: 24px; font-size: 24px; color: #1a1a1a; font-weight: 600; }
+
+        .main-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; align-items: start; }
+
+        .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card-title { font-size: 13px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; text-align: center; }
+
+        .upload-box { border: 2px dashed #d0d0d0; border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; transition: border-color 0.2s; position: relative; height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
         .upload-box:hover { border-color: #4a90d9; }
-        .upload-box.has-image { border-style: solid; border-color: #4a90d9; }
+        .upload-box.has-image { border-style: solid; border-color: #4a90d9; padding: 4px; }
         .upload-box input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-        .upload-box img { max-width: 100%; max-height: 200px; border-radius: 8px; object-fit: contain; }
-        .upload-box .label { font-size: 16px; color: #666; margin-top: 10px; }
-        .upload-box .icon { font-size: 40px; color: #ccc; margin-bottom: 10px; }
-        .controls { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 20px; }
-        .controls label { font-weight: 600; }
-        .controls select { padding: 8px 16px; border-radius: 8px; border: 1px solid #ccc; font-size: 14px; }
-        .btn { background: #4a90d9; color: #fff; border: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; cursor: pointer; transition: background 0.2s; }
+        .upload-box img { max-width: 100%; max-height: 260px; border-radius: 6px; object-fit: contain; }
+        .upload-box .icon { font-size: 36px; color: #ccc; }
+        .upload-box .label { font-size: 13px; color: #999; margin-top: 8px; }
+
+        .result-box { height: 280px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: 8px; overflow: hidden; }
+        .result-box img { max-width: 100%; max-height: 280px; border-radius: 6px; object-fit: contain; }
+        .result-box .placeholder { color: #bbb; font-size: 13px; }
+
+        .controls { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 20px; }
+        .controls label { font-size: 13px; font-weight: 600; color: #555; }
+        .controls select { padding: 8px 14px; border-radius: 6px; border: 1px solid #d0d0d0; font-size: 13px; background: #fff; }
+        .btn { background: #4a90d9; color: #fff; border: none; padding: 10px 32px; border-radius: 6px; font-size: 14px; cursor: pointer; transition: background 0.2s; font-weight: 500; }
         .btn:hover { background: #357abd; }
-        .btn:disabled { background: #aaa; cursor: not-allowed; }
-        .result-section { background: #fff; border-radius: 12px; padding: 30px; text-align: center; display: none; }
-        .result-section img { max-width: 100%; max-height: 500px; border-radius: 8px; object-fit: contain; }
-        .status { font-size: 18px; color: #666; margin: 20px 0; }
-        .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #ccc; border-top-color: #4a90d9; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 10px; }
+        .btn:disabled { background: #b0b0b0; cursor: not-allowed; }
+
+        .status-bar { text-align: center; margin-top: 16px; font-size: 13px; color: #888; min-height: 20px; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #4a90d9; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .error { color: #d9534f; font-weight: 600; }
+        .error { color: #d9534f; }
+        .success { color: #5cb85c; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Virtual Try-On</h1>
 
-        <div class="upload-section">
-            <div class="upload-box" id="personBox">
-                <div class="icon">&#128100;</div>
-                <div class="label">Upload your photo</div>
-                <img id="personPreview" style="display:none" alt="Person preview">
-                <input type="file" id="personInput" accept="image/*">
+        <div class="main-grid">
+            <div class="card">
+                <div class="card-title">Your Photo</div>
+                <div class="upload-box" id="personBox">
+                    <div class="icon">&#128100;</div>
+                    <div class="label">Click to upload</div>
+                    <img id="personPreview" style="display:none" alt="Person preview">
+                    <input type="file" id="personInput" accept="image/*">
+                </div>
             </div>
-            <div class="upload-box" id="garmentBox">
-                <div class="icon">&#128085;</div>
-                <div class="label">Upload garment image</div>
-                <img id="garmentPreview" style="display:none" alt="Garment preview">
-                <input type="file" id="garmentInput" accept="image/*">
+
+            <div class="card">
+                <div class="card-title">Garment</div>
+                <div class="upload-box" id="garmentBox">
+                    <div class="icon">&#128085;</div>
+                    <div class="label">Click to upload</div>
+                    <img id="garmentPreview" style="display:none" alt="Garment preview">
+                    <input type="file" id="garmentInput" accept="image/*">
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Result</div>
+                <div class="result-box" id="resultBox">
+                    <div class="placeholder" id="resultPlaceholder">Result will appear here</div>
+                    <img id="resultImage" style="display:none" alt="Try-on result">
+                </div>
             </div>
         </div>
 
@@ -61,10 +86,7 @@
             <button class="btn" id="submitBtn" onclick="submitTryon()">Try On</button>
         </div>
 
-        <div class="result-section" id="resultSection">
-            <div class="status" id="statusText"></div>
-            <img id="resultImage" style="display:none" alt="Try-on result">
-        </div>
+        <div class="status-bar" id="statusBar"></div>
     </div>
 
     <script>
@@ -77,9 +99,10 @@
                     const preview = document.getElementById(previewId);
                     preview.src = ev.target.result;
                     preview.style.display = 'block';
-                    document.getElementById(boxId).classList.add('has-image');
-                    document.getElementById(boxId).querySelector('.icon').style.display = 'none';
-                    document.getElementById(boxId).querySelector('.label').style.display = 'none';
+                    const box = document.getElementById(boxId);
+                    box.classList.add('has-image');
+                    box.querySelector('.icon').style.display = 'none';
+                    box.querySelector('.label').style.display = 'none';
                 };
                 reader.readAsDataURL(file);
             });
@@ -93,13 +116,17 @@
             const category = document.getElementById('category').value;
 
             if (!personFile || !garmentFile) {
-                alert('Please upload both images.');
+                document.getElementById('statusBar').innerHTML = '<span class="error">Please upload both images.</span>';
                 return;
             }
 
             const btn = document.getElementById('submitBtn');
             btn.disabled = true;
-            btn.textContent = 'Submitting...';
+            btn.textContent = 'Processing...';
+            document.getElementById('resultImage').style.display = 'none';
+            document.getElementById('resultPlaceholder').style.display = 'block';
+            document.getElementById('resultPlaceholder').textContent = 'Uploading...';
+            document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Uploading and preprocessing...';
 
             const formData = new FormData();
             formData.append('person_image', personFile);
@@ -111,19 +138,17 @@
                 const data = await resp.json();
 
                 if (data.error) {
-                    alert(data.error);
+                    document.getElementById('statusBar').innerHTML = '<span class="error">' + data.error + '</span>';
                     btn.disabled = false;
                     btn.textContent = 'Try On';
                     return;
                 }
 
-                document.getElementById('resultSection').style.display = 'block';
-                document.getElementById('resultImage').style.display = 'none';
-                document.getElementById('statusText').innerHTML = '<span class="spinner"></span> Processing your try-on...';
-
+                document.getElementById('resultPlaceholder').textContent = 'Generating...';
+                document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Generating try-on result...';
                 pollStatus(data.user_id, data.request_id);
             } catch (err) {
-                alert('Something went wrong. Please try again.');
+                document.getElementById('statusBar').innerHTML = '<span class="error">Something went wrong. Please try again.</span>';
                 btn.disabled = false;
                 btn.textContent = 'Try On';
             }
@@ -137,7 +162,8 @@
 
                     if (data.status === 'COMPLETED' && data.result_url) {
                         clearInterval(interval);
-                        document.getElementById('statusText').textContent = 'Done!';
+                        document.getElementById('statusBar').innerHTML = '<span class="success">Done!</span>';
+                        document.getElementById('resultPlaceholder').style.display = 'none';
                         const img = document.getElementById('resultImage');
                         img.src = data.result_url;
                         img.style.display = 'block';
@@ -145,13 +171,12 @@
                         document.getElementById('submitBtn').textContent = 'Try On';
                     } else if (data.status === 'FAILED') {
                         clearInterval(interval);
-                        document.getElementById('statusText').innerHTML = '<span class="error">Processing failed. Please try again.</span>';
+                        document.getElementById('statusBar').innerHTML = '<span class="error">Processing failed. Please try again.</span>';
+                        document.getElementById('resultPlaceholder').textContent = 'Failed';
                         document.getElementById('submitBtn').disabled = false;
                         document.getElementById('submitBtn').textContent = 'Try On';
                     }
-                } catch (err) {
-                    // keep polling
-                }
+                } catch (err) { }
             }, 5000);
         }
     </script>
