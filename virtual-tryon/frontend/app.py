@@ -289,10 +289,32 @@ def submit_tryon():
             }),
         )
 
-        return jsonify({"user_id": user_id, "request_id": request_id})
+        return jsonify({
+            "user_id": user_id,
+            "request_id": request_id,
+            "preprocessed": get_preprocessed_urls(user_id, request_id),
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def get_preprocessed_urls(user_id, request_id):
+    """Generate presigned URLs for all preprocessed images."""
+    prefix = f"{user_id}/{request_id}"
+    files = {
+        "image": f"{prefix}/0_image.png",
+        "pose": f"{prefix}/1_pose.png",
+        "upper_mask": f"{prefix}/2_upper-mask.png",
+        "lower_mask": f"{prefix}/3_lower-mask.png",
+        "dress_mask": f"{prefix}/4_dress-mask.png",
+    }
+    urls = {}
+    for name, key in files.items():
+        urls[name] = s3.generate_presigned_url(
+            "get_object", Params={"Bucket": PREPROCESSED_BUCKET, "Key": key}, ExpiresIn=3600
+        )
+    return urls
 
 
 @app.route("/api/status/<user_id>/<request_id>")

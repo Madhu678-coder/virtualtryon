@@ -36,7 +36,11 @@
         .success { color: #5cb85c; }
 
         /* Telegram section */
-        .telegram-section { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-top: 20px; }
+        .telegram-section, .preprocess-section { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-top: 20px; }
+        .preprocess-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+        .preprocess-item { text-align: center; }
+        .preprocess-item img { width: 100%; border-radius: 6px; background: #111; aspect-ratio: 3/4; object-fit: contain; }
+        .preprocess-label { font-size: 11px; font-weight: 600; color: #777; margin-bottom: 6px; text-transform: uppercase; }
         .telegram-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
         .telegram-header h3 { font-size: 14px; color: #555; font-weight: 600; }
         .telegram-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
@@ -95,6 +99,19 @@
         </div>
 
         <div class="status-bar" id="statusBar"></div>
+
+        <div class="preprocess-section" id="preprocessSection" style="display:none;">
+            <div class="telegram-header">
+                <h3>&#128270; Preprocessed Images</h3>
+            </div>
+            <div class="preprocess-grid">
+                <div class="preprocess-item"><div class="preprocess-label">Resized Image</div><img id="ppImage" alt="Resized"></div>
+                <div class="preprocess-item"><div class="preprocess-label">Pose</div><img id="ppPose" alt="Pose"></div>
+                <div class="preprocess-item"><div class="preprocess-label">Upper Mask</div><img id="ppUpperMask" alt="Upper Mask"></div>
+                <div class="preprocess-item"><div class="preprocess-label">Lower Mask</div><img id="ppLowerMask" alt="Lower Mask"></div>
+                <div class="preprocess-item"><div class="preprocess-label">Dress Mask</div><img id="ppDressMask" alt="Dress Mask"></div>
+            </div>
+        </div>
 
         <div class="telegram-section">
             <div class="telegram-header">
@@ -208,6 +225,7 @@
                     }
                     document.getElementById('resultPlaceholder').textContent = 'Generating...';
                     document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Generating try-on result...';
+                    if (data.preprocessed) { showPreprocessed(data.preprocessed); }
                     pollStatus(data.user_id, data.request_id);
                 })
                 .catch(function(err) {
@@ -241,6 +259,15 @@
                     })
                     .catch(function() {});
             }, 5000);
+        }
+
+        function showPreprocessed(pp) {
+            document.getElementById('preprocessSection').style.display = 'block';
+            document.getElementById('ppImage').src = pp.image;
+            document.getElementById('ppPose').src = pp.pose;
+            document.getElementById('ppUpperMask').src = pp.upper_mask;
+            document.getElementById('ppLowerMask').src = pp.lower_mask;
+            document.getElementById('ppDressMask').src = pp.dress_mask;
         }
 
         // Auto-refresh telegram photos every 10 seconds
