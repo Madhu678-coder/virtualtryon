@@ -1,0 +1,8 @@
+IDM-VTON/
+ckpt/
+IDM_VTON/
+.env
+__pycache__/
+sqs_poller_logs.txt
+output_sample_images/
+vton_venv/

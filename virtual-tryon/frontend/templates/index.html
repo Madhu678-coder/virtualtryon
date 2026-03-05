@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Virtual Try-On</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; }
+        .container { max-width: 900px; margin: 40px auto; padding: 0 20px; }
+        h1 { text-align: center; margin-bottom: 30px; font-size: 28px; color: #1a1a1a; }
+        .upload-section { display: flex; gap: 20px; margin-bottom: 20px; }
+        .upload-box { flex: 1; background: #fff; border: 2px dashed #ccc; border-radius: 12px; padding: 30px; text-align: center; cursor: pointer; transition: border-color 0.2s; position: relative; min-height: 250px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .upload-box:hover { border-color: #4a90d9; }
+        .upload-box.has-image { border-style: solid; border-color: #4a90d9; }
+        .upload-box input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+        .upload-box img { max-width: 100%; max-height: 200px; border-radius: 8px; object-fit: contain; }
+        .upload-box .label { font-size: 16px; color: #666; margin-top: 10px; }
+        .upload-box .icon { font-size: 40px; color: #ccc; margin-bottom: 10px; }
+        .controls { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 20px; }
+        .controls label { font-weight: 600; }
+        .controls select { padding: 8px 16px; border-radius: 8px; border: 1px solid #ccc; font-size: 14px; }
+        .btn { background: #4a90d9; color: #fff; border: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; cursor: pointer; transition: background 0.2s; }
+        .btn:hover { background: #357abd; }
+        .btn:disabled { background: #aaa; cursor: not-allowed; }
+        .result-section { background: #fff; border-radius: 12px; padding: 30px; text-align: center; display: none; }
+        .result-section img { max-width: 100%; max-height: 500px; border-radius: 8px; object-fit: contain; }
+        .status { font-size: 18px; color: #666; margin: 20px 0; }
+        .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #ccc; border-top-color: #4a90d9; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 10px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error { color: #d9534f; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Virtual Try-On</h1>
+
+        <div class="upload-section">
+            <div class="upload-box" id="personBox">
+                <div class="icon">&#128100;</div>
+                <div class="label">Upload your photo</div>
+                <img id="personPreview" style="display:none" alt="Person preview">
+                <input type="file" id="personInput" accept="image/*">
+            </div>
+            <div class="upload-box" id="garmentBox">
+                <div class="icon">&#128085;</div>
+                <div class="label">Upload garment image</div>
+                <img id="garmentPreview" style="display:none" alt="Garment preview">
+                <input type="file" id="garmentInput" accept="image/*">
+            </div>
+        </div>
+
+        <div class="controls">
+            <label for="category">Category:</label>
+            <select id="category">
+                <option value="upper">Upper Body</option>
+                <option value="lower">Lower Body</option>
+                <option value="dress">Dress</option>
+                <option value="upper_lower">Upper + Lower</option>
+            </select>
+            <button class="btn" id="submitBtn" onclick="submitTryon()">Try On</button>
+        </div>
+
+        <div class="result-section" id="resultSection">
+            <div class="status" id="statusText"></div>
+            <img id="resultImage" style="display:none" alt="Try-on result">
+        </div>
+    </div>
+
+    <script>
+        function setupPreview(inputId, previewId, boxId) {
+            document.getElementById(inputId).addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = function(ev) {
+                    const preview = document.getElementById(previewId);
+                    preview.src = ev.target.result;
+                    preview.style.display = 'block';
+                    document.getElementById(boxId).classList.add('has-image');
+                    document.getElementById(boxId).querySelector('.icon').style.display = 'none';
+                    document.getElementById(boxId).querySelector('.label').style.display = 'none';
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+        setupPreview('personInput', 'personPreview', 'personBox');
+        setupPreview('garmentInput', 'garmentPreview', 'garmentBox');
+
+        async function submitTryon() {
+            const personFile = document.getElementById('personInput').files[0];
+            const garmentFile = document.getElementById('garmentInput').files[0];
+            const category = document.getElementById('category').value;
+
+            if (!personFile || !garmentFile) {
+                alert('Please upload both images.');
+                return;
+            }
+
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+
+            const formData = new FormData();
+            formData.append('person_image', personFile);
+            formData.append('garment_image', garmentFile);
+            formData.append('category', category);
+
+            try {
+                const resp = await fetch('/api/tryon', { method: 'POST', body: formData });
+                const data = await resp.json();
+
+                if (data.error) {
+                    alert(data.error);
+                    btn.disabled = false;
+                    btn.textContent = 'Try On';
+                    return;
+                }
+
+                document.getElementById('resultSection').style.display = 'block';
+                document.getElementById('resultImage').style.display = 'none';
+                document.getElementById('statusText').innerHTML = '<span class="spinner"></span> Processing your try-on...';
+
+                pollStatus(data.user_id, data.request_id);
+            } catch (err) {
+                alert('Something went wrong. Please try again.');
+                btn.disabled = false;
+                btn.textContent = 'Try On';
+            }
+        }
+
+        async function pollStatus(userId, requestId) {
+            const interval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`/api/status/${userId}/${requestId}`);
+                    const data = await resp.json();
+
+                    if (data.status === 'COMPLETED' && data.result_url) {
+                        clearInterval(interval);
+                        document.getElementById('statusText').textContent = 'Done!';
+                        const img = document.getElementById('resultImage');
+                        img.src = data.result_url;
+                        img.style.display = 'block';
+                        document.getElementById('submitBtn').disabled = false;
+                        document.getElementById('submitBtn').textContent = 'Try On';
+                    } else if (data.status === 'FAILED') {
+                        clearInterval(interval);
+                        document.getElementById('statusText').innerHTML = '<span class="error">Processing failed. Please try again.</span>';
+                        document.getElementById('submitBtn').disabled = false;
+                        document.getElementById('submitBtn').textContent = 'Try On';
+                    }
+                } catch (err) {
+                    // keep polling
+                }
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
