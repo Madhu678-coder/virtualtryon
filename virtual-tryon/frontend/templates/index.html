@@ -7,14 +7,11 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; }
-        .container { max-width: 1000px; margin: 30px auto; padding: 0 20px; }
+        .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
         h1 { text-align: center; margin-bottom: 24px; font-size: 24px; color: #1a1a1a; font-weight: 600; }
-
         .main-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; align-items: start; }
-
         .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card-title { font-size: 13px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; text-align: center; }
-
         .upload-box { border: 2px dashed #d0d0d0; border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; transition: border-color 0.2s; position: relative; height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
         .upload-box:hover { border-color: #4a90d9; }
         .upload-box.has-image { border-style: solid; border-color: #4a90d9; padding: 4px; }
@@ -22,23 +19,34 @@
         .upload-box img { max-width: 100%; max-height: 260px; border-radius: 6px; object-fit: contain; }
         .upload-box .icon { font-size: 36px; color: #ccc; }
         .upload-box .label { font-size: 13px; color: #999; margin-top: 8px; }
-
         .result-box { height: 280px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: 8px; overflow: hidden; }
         .result-box img { max-width: 100%; max-height: 280px; border-radius: 6px; object-fit: contain; }
         .result-box .placeholder { color: #bbb; font-size: 13px; }
-
         .controls { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 20px; }
         .controls label { font-size: 13px; font-weight: 600; color: #555; }
         .controls select { padding: 8px 14px; border-radius: 6px; border: 1px solid #d0d0d0; font-size: 13px; background: #fff; }
         .btn { background: #4a90d9; color: #fff; border: none; padding: 10px 32px; border-radius: 6px; font-size: 14px; cursor: pointer; transition: background 0.2s; font-weight: 500; }
         .btn:hover { background: #357abd; }
         .btn:disabled { background: #b0b0b0; cursor: not-allowed; }
-
+        .btn-sm { padding: 6px 16px; font-size: 12px; }
         .status-bar { text-align: center; margin-top: 16px; font-size: 13px; color: #888; min-height: 20px; }
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #4a90d9; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .error { color: #d9534f; }
         .success { color: #5cb85c; }
+
+        /* Telegram section */
+        .telegram-section { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-top: 20px; }
+        .telegram-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .telegram-header h3 { font-size: 14px; color: #555; font-weight: 600; }
+        .telegram-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+        .telegram-thumb { position: relative; border-radius: 8px; overflow: hidden; cursor: pointer; border: 3px solid transparent; transition: border-color 0.2s; aspect-ratio: 3/4; }
+        .telegram-thumb:hover { border-color: #4a90d9; }
+        .telegram-thumb.selected { border-color: #4a90d9; }
+        .telegram-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .telegram-thumb .name { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; font-size: 10px; padding: 3px 6px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+        .telegram-empty { color: #bbb; font-size: 13px; text-align: center; padding: 20px; }
+        .or-divider { text-align: center; color: #aaa; font-size: 12px; margin: 8px 0; }
     </style>
 </head>
 <body>
@@ -50,7 +58,7 @@
                 <div class="card-title">Your Photo</div>
                 <div class="upload-box" id="personBox">
                     <div class="icon">&#128100;</div>
-                    <div class="label">Click to upload</div>
+                    <div class="label">Upload or select from Telegram below</div>
                     <img id="personPreview" style="display:none" alt="Person preview">
                     <input type="file" id="personInput" accept="image/*">
                 </div>
@@ -87,19 +95,33 @@
         </div>
 
         <div class="status-bar" id="statusBar"></div>
+
+        <div class="telegram-section">
+            <div class="telegram-header">
+                <h3>&#128242; Telegram Photos</h3>
+                <button class="btn btn-sm" onclick="loadTelegramPhotos()">Refresh</button>
+            </div>
+            <div id="telegramGrid" class="telegram-grid">
+                <div class="telegram-empty">No photos yet. Send a photo to the Telegram bot to see it here.</div>
+            </div>
+        </div>
     </div>
 
     <script>
+        var selectedTelegramPhoto = '';
+
         function setupPreview(inputId, previewId, boxId) {
             document.getElementById(inputId).addEventListener('change', function(e) {
-                const file = e.target.files[0];
+                var file = e.target.files[0];
                 if (!file) return;
-                const reader = new FileReader();
+                selectedTelegramPhoto = '';
+                document.querySelectorAll('.telegram-thumb').forEach(function(t) { t.classList.remove('selected'); });
+                var reader = new FileReader();
                 reader.onload = function(ev) {
-                    const preview = document.getElementById(previewId);
+                    var preview = document.getElementById(previewId);
                     preview.src = ev.target.result;
                     preview.style.display = 'block';
-                    const box = document.getElementById(boxId);
+                    var box = document.getElementById(boxId);
                     box.classList.add('has-image');
                     box.querySelector('.icon').style.display = 'none';
                     box.querySelector('.label').style.display = 'none';
@@ -110,17 +132,55 @@
         setupPreview('personInput', 'personPreview', 'personBox');
         setupPreview('garmentInput', 'garmentPreview', 'garmentBox');
 
-        async function submitTryon() {
-            const personFile = document.getElementById('personInput').files[0];
-            const garmentFile = document.getElementById('garmentInput').files[0];
-            const category = document.getElementById('category').value;
+        function selectTelegramPhoto(filename, url) {
+            selectedTelegramPhoto = filename;
+            document.getElementById('personInput').value = '';
+            var preview = document.getElementById('personPreview');
+            preview.src = url;
+            preview.style.display = 'block';
+            var box = document.getElementById('personBox');
+            box.classList.add('has-image');
+            box.querySelector('.icon').style.display = 'none';
+            box.querySelector('.label').style.display = 'none';
+            document.querySelectorAll('.telegram-thumb').forEach(function(t) { t.classList.remove('selected'); });
+            event.currentTarget.classList.add('selected');
+        }
 
-            if (!personFile || !garmentFile) {
-                document.getElementById('statusBar').innerHTML = '<span class="error">Please upload both images.</span>';
+        function loadTelegramPhotos() {
+            fetch('/api/telegram-photos')
+                .then(function(r) { return r.json(); })
+                .then(function(photos) {
+                    var grid = document.getElementById('telegramGrid');
+                    if (photos.length === 0) {
+                        grid.innerHTML = '<div class="telegram-empty">No photos yet. Send a photo to the Telegram bot.</div>';
+                        return;
+                    }
+                    grid.innerHTML = '';
+                    photos.forEach(function(p) {
+                        var div = document.createElement('div');
+                        div.className = 'telegram-thumb';
+                        div.onclick = function(e) { selectTelegramPhoto(p.filename, p.url); };
+                        div.innerHTML = '<img src="' + p.url + '" alt="' + p.filename + '"><div class="name">' + p.filename + '</div>';
+                        grid.appendChild(div);
+                    });
+                });
+        }
+
+        function submitTryon() {
+            var personFile = document.getElementById('personInput').files[0];
+            var garmentFile = document.getElementById('garmentInput').files[0];
+            var category = document.getElementById('category').value;
+
+            if (!personFile && !selectedTelegramPhoto) {
+                document.getElementById('statusBar').innerHTML = '<span class="error">Please upload a photo or select one from Telegram.</span>';
+                return;
+            }
+            if (!garmentFile) {
+                document.getElementById('statusBar').innerHTML = '<span class="error">Please upload a garment image.</span>';
                 return;
             }
 
-            const btn = document.getElementById('submitBtn');
+            var btn = document.getElementById('submitBtn');
             btn.disabled = true;
             btn.textContent = 'Processing...';
             document.getElementById('resultImage').style.display = 'none';
@@ -128,57 +188,64 @@
             document.getElementById('resultPlaceholder').textContent = 'Uploading...';
             document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Uploading and preprocessing...';
 
-            const formData = new FormData();
-            formData.append('person_image', personFile);
+            var formData = new FormData();
+            if (selectedTelegramPhoto) {
+                formData.append('telegram_photo', selectedTelegramPhoto);
+            } else {
+                formData.append('person_image', personFile);
+            }
             formData.append('garment_image', garmentFile);
             formData.append('category', category);
 
-            try {
-                const resp = await fetch('/api/tryon', { method: 'POST', body: formData });
-                const data = await resp.json();
-
-                if (data.error) {
-                    document.getElementById('statusBar').innerHTML = '<span class="error">' + data.error + '</span>';
+            fetch('/api/tryon', { method: 'POST', body: formData })
+                .then(function(resp) { return resp.json(); })
+                .then(function(data) {
+                    if (data.error) {
+                        document.getElementById('statusBar').innerHTML = '<span class="error">' + data.error + '</span>';
+                        btn.disabled = false;
+                        btn.textContent = 'Try On';
+                        return;
+                    }
+                    document.getElementById('resultPlaceholder').textContent = 'Generating...';
+                    document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Generating try-on result...';
+                    pollStatus(data.user_id, data.request_id);
+                })
+                .catch(function(err) {
+                    document.getElementById('statusBar').innerHTML = '<span class="error">Something went wrong. Please try again.</span>';
                     btn.disabled = false;
                     btn.textContent = 'Try On';
-                    return;
-                }
-
-                document.getElementById('resultPlaceholder').textContent = 'Generating...';
-                document.getElementById('statusBar').innerHTML = '<span class="spinner"></span> Generating try-on result...';
-                pollStatus(data.user_id, data.request_id);
-            } catch (err) {
-                document.getElementById('statusBar').innerHTML = '<span class="error">Something went wrong. Please try again.</span>';
-                btn.disabled = false;
-                btn.textContent = 'Try On';
-            }
+                });
         }
 
-        async function pollStatus(userId, requestId) {
-            const interval = setInterval(async () => {
-                try {
-                    const resp = await fetch(`/api/status/${userId}/${requestId}`);
-                    const data = await resp.json();
-
-                    if (data.status === 'COMPLETED' && data.result_url) {
-                        clearInterval(interval);
-                        document.getElementById('statusBar').innerHTML = '<span class="success">Done!</span>';
-                        document.getElementById('resultPlaceholder').style.display = 'none';
-                        const img = document.getElementById('resultImage');
-                        img.src = data.result_url;
-                        img.style.display = 'block';
-                        document.getElementById('submitBtn').disabled = false;
-                        document.getElementById('submitBtn').textContent = 'Try On';
-                    } else if (data.status === 'FAILED') {
-                        clearInterval(interval);
-                        document.getElementById('statusBar').innerHTML = '<span class="error">Processing failed. Please try again.</span>';
-                        document.getElementById('resultPlaceholder').textContent = 'Failed';
-                        document.getElementById('submitBtn').disabled = false;
-                        document.getElementById('submitBtn').textContent = 'Try On';
-                    }
-                } catch (err) { }
+        function pollStatus(userId, requestId) {
+            var interval = setInterval(function() {
+                fetch('/api/status/' + userId + '/' + requestId)
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(data) {
+                        if (data.status === 'COMPLETED' && data.result_url) {
+                            clearInterval(interval);
+                            document.getElementById('statusBar').innerHTML = '<span class="success">Done!</span>';
+                            document.getElementById('resultPlaceholder').style.display = 'none';
+                            var img = document.getElementById('resultImage');
+                            img.src = data.result_url;
+                            img.style.display = 'block';
+                            document.getElementById('submitBtn').disabled = false;
+                            document.getElementById('submitBtn').textContent = 'Try On';
+                        } else if (data.status === 'FAILED') {
+                            clearInterval(interval);
+                            document.getElementById('statusBar').innerHTML = '<span class="error">Processing failed. Please try again.</span>';
+                            document.getElementById('resultPlaceholder').textContent = 'Failed';
+                            document.getElementById('submitBtn').disabled = false;
+                            document.getElementById('submitBtn').textContent = 'Try On';
+                        }
+                    })
+                    .catch(function() {});
             }, 5000);
         }
+
+        // Auto-refresh telegram photos every 10 seconds
+        loadTelegramPhotos();
+        setInterval(loadTelegramPhotos, 10000);
     </script>
 </body>
 </html>

@@ -2,13 +2,15 @@ import os
 import sys
 import uuid
 import json
+import threading
 from datetime import datetime, timezone
 from io import BytesIO
 
 import boto3
 import numpy as np
 import torch
-from flask import Flask, render_template, request, jsonify
+import requests as http_requests
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from dotenv import load_dotenv
 from PIL import Image
 
@@ -32,6 +34,10 @@ OUTPUT_FOLDER = os.getenv("default_vton_output_folder", "vton_api_outputs")
 PREPROCESSED_BUCKET = os.getenv("preprocessed_bucket", "vton-preprocessed-1")
 PRODUCT_BUCKET = os.getenv("product_bucket", "product-images-groome-1")
 
+# Telegram config
+TELEGRAM_TOKEN = os.getenv("telegram_token", "8660907511:AAHYlE-vXQ4_F2Yk2jXUHqZILfHrCJHOigM")
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
 sqs = boto3.client("sqs", region_name=REGION)
 s3 = boto3.client("s3", region_name=REGION)
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
@@ -42,6 +48,93 @@ GPU_ID = int(os.getenv("gpu_id", "0"))
 parsing_model = Parsing(GPU_ID)
 openpose_model = OpenPose(GPU_ID)
 
+# Store telegram photos in memory and on disk
+TELEGRAM_PHOTOS_DIR = os.path.join(os.path.dirname(__file__), "telegram_photos")
+os.makedirs(TELEGRAM_PHOTOS_DIR, exist_ok=True)
+
+
+# --- Telegram Bot ---
+
+def telegram_download_file(file_id):
+    """Download a file from Telegram by file_id."""
+    resp = http_requests.get(f"{TELEGRAM_API}/getFile", params={"file_id": file_id})
+    file_path = resp.json()["result"]["file_path"]
+    file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    return http_requests.get(file_url).content
+
+
+def telegram_send_message(chat_id, text):
+    """Send a text message to a Telegram chat."""
+    http_requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text})
+
+
+def telegram_send_photo(chat_id, photo_bytes, caption=""):
+    """Send a photo to a Telegram chat."""
+    http_requests.post(
+        f"{TELEGRAM_API}/sendPhoto",
+        data={"chat_id": chat_id, "caption": caption},
+        files={"photo": ("result.png", photo_bytes, "image/png")},
+    )
+
+
+def process_telegram_update(update):
+    """Process a single Telegram update."""
+    message = update.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+
+    if not chat_id:
+        return
+
+    # Handle photo messages
+    if "photo" in message:
+        # Get the largest photo
+        photo = message["photo"][-1]
+        file_id = photo["file_id"]
+
+        try:
+            photo_bytes = telegram_download_file(file_id)
+            img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+
+            # Save with timestamp-based name
+            photo_id = str(uuid.uuid4())[:8]
+            username = message.get("from", {}).get("first_name", "User")
+            filename = f"{username}_{photo_id}.png"
+            filepath = os.path.join(TELEGRAM_PHOTOS_DIR, filename)
+            img.save(filepath)
+
+            telegram_send_message(chat_id, f"Photo received! You can now select it in the Virtual Try-On UI as '{filename}'.")
+        except Exception as e:
+            telegram_send_message(chat_id, f"Error processing photo: {str(e)}")
+
+    elif "text" in message:
+        text = message["text"]
+        if text == "/start":
+            telegram_send_message(chat_id, "Welcome to Virtual Try-On Bot!\n\nSend me your photo and it will appear in the web UI for try-on.")
+        else:
+            telegram_send_message(chat_id, "Send me a photo to use in the Virtual Try-On!")
+
+
+def telegram_polling():
+    """Poll Telegram for updates."""
+    offset = 0
+    while True:
+        try:
+            resp = http_requests.get(
+                f"{TELEGRAM_API}/getUpdates",
+                params={"offset": offset, "timeout": 30},
+                timeout=35,
+            )
+            updates = resp.json().get("result", [])
+            for update in updates:
+                offset = update["update_id"] + 1
+                process_telegram_update(update)
+        except Exception as e:
+            print(f"Telegram polling error: {e}")
+            import time
+            time.sleep(5)
+
+
+# --- Helper Functions ---
 
 def upload_pil_to_s3(pil_image, bucket, key, fmt="PNG"):
     """Upload a PIL image to S3."""
@@ -52,16 +145,8 @@ def upload_pil_to_s3(pil_image, bucket, key, fmt="PNG"):
 
 
 def generate_mask_from_parsing(parsed_image, category):
-    """Generate clothing mask from parsed segmentation image.
-    
-    Parsing labels (ATR dataset):
-    0: Background, 1: Hat, 2: Hair, 3: Sunglasses, 4: Upper-clothes,
-    5: Skirt, 6: Pants, 7: Dress, 8: Belt, 9: Left-shoe, 10: Right-shoe,
-    11: Face, 12: Left-leg, 13: Right-leg, 14: Left-arm, 15: Right-arm,
-    16: Bag, 17: Scarf, 18: Neck
-    """
+    """Generate clothing mask from parsed segmentation image."""
     parsing_array = np.array(parsed_image)
-
     if category == "upper":
         mask = np.isin(parsing_array, [4]).astype(np.uint8) * 255
     elif category == "lower":
@@ -70,38 +155,27 @@ def generate_mask_from_parsing(parsed_image, category):
         mask = np.isin(parsing_array, [7]).astype(np.uint8) * 255
     else:
         mask = np.isin(parsing_array, [4, 5, 6]).astype(np.uint8) * 255
-
     return Image.fromarray(mask, mode="L")
 
 
 def preprocess_person_image(pil_image, user_id, request_id):
     """Run human parsing and openpose, upload all results to S3."""
-    # Resize to expected dimensions
     pil_image = pil_image.resize((768, 1024))
     prefix = f"{user_id}/{request_id}"
 
-    # Save temp image for parsing (it expects a directory)
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = os.path.join(tmpdir, "input.jpg")
         pil_image.save(img_path)
-
-        # Run human parsing
         parsed_image, face_mask = parsing_model(tmpdir)
 
-    # Run openpose
     keypoints = openpose_model(pil_image, resolution=384)
-
-    # Generate pose image (simple keypoint visualization)
     pose_img = draw_pose_image(keypoints, 768, 1024)
 
-    # Generate masks for all categories
     upper_mask = generate_mask_from_parsing(parsed_image, "upper")
     lower_mask = generate_mask_from_parsing(parsed_image, "lower")
     dress_mask = generate_mask_from_parsing(parsed_image, "dress")
 
-    # Upload all to S3 with naming convention: prefix_key.png
-    # aws_utils.py splits filename on '_' and uses last part as dict key
     upload_pil_to_s3(pil_image, PREPROCESSED_BUCKET, f"{prefix}/0_image.png")
     upload_pil_to_s3(pose_img, PREPROCESSED_BUCKET, f"{prefix}/1_pose.png")
     upload_pil_to_s3(upper_mask, PREPROCESSED_BUCKET, f"{prefix}/2_upper-mask.png")
@@ -114,20 +188,14 @@ def draw_pose_image(keypoints, width, height):
     import cv2
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
     points = keypoints["pose_keypoints_2d"]
-
-    # Scale keypoints to image size
     scaled = []
     for pt in points:
         x = int(pt[0] * width / 384)
         y = int(pt[1] * height / 512)
         scaled.append((x, y))
-
-    # Draw keypoints
     for pt in scaled:
         if pt[0] > 0 or pt[1] > 0:
             cv2.circle(canvas, pt, 4, (255, 255, 255), -1)
-
-    # Draw limb connections
     limbs = [
         (0, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
         (1, 8), (8, 9), (9, 10), (1, 11), (11, 12), (12, 13),
@@ -138,30 +206,59 @@ def draw_pose_image(keypoints, width, height):
             pa, pb = scaled[a], scaled[b]
             if (pa[0] > 0 or pa[1] > 0) and (pb[0] > 0 or pb[1] > 0):
                 cv2.line(canvas, pa, pb, (255, 255, 255), 2)
-
     return Image.fromarray(canvas)
 
+
+# --- Flask Routes ---
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
+@app.route("/telegram_photos/<filename>")
+def serve_telegram_photo(filename):
+    return send_from_directory(TELEGRAM_PHOTOS_DIR, filename)
+
+
+@app.route("/api/telegram-photos")
+def list_telegram_photos():
+    """List all photos received from Telegram."""
+    photos = []
+    for f in sorted(os.listdir(TELEGRAM_PHOTOS_DIR), reverse=True):
+        if f.lower().endswith((".png", ".jpg", ".jpeg")):
+            photos.append({"filename": f, "url": f"/telegram_photos/{f}"})
+    return jsonify(photos)
+
+
 @app.route("/api/tryon", methods=["POST"])
 def submit_tryon():
-    person_file = request.files.get("person_image")
     garment_file = request.files.get("garment_image")
     category = request.form.get("category", "upper")
+    telegram_photo = request.form.get("telegram_photo", "")
 
-    if not person_file or not garment_file:
-        return jsonify({"error": "Both person and garment images are required"}), 400
+    # Person image can come from upload or telegram
+    person_file = request.files.get("person_image")
+
+    if not garment_file:
+        return jsonify({"error": "Garment image is required"}), 400
+
+    if not person_file and not telegram_photo:
+        return jsonify({"error": "Please upload a photo or select one from Telegram"}), 400
 
     user_id = str(uuid.uuid4())
     request_id = str(uuid.uuid4())
 
     try:
-        # Process person image (parsing + openpose + masks + upload)
-        person_img = Image.open(person_file).convert("RGB")
+        # Load person image
+        if telegram_photo:
+            photo_path = os.path.join(TELEGRAM_PHOTOS_DIR, telegram_photo)
+            if not os.path.exists(photo_path):
+                return jsonify({"error": "Telegram photo not found"}), 404
+            person_img = Image.open(photo_path).convert("RGB")
+        else:
+            person_img = Image.open(person_file).convert("RGB")
+
         preprocess_person_image(person_img, user_id, request_id)
 
         # Upload garment image
@@ -222,4 +319,9 @@ def check_status(user_id, request_id):
 
 
 if __name__ == "__main__":
+    # Start Telegram bot polling in background thread
+    bot_thread = threading.Thread(target=telegram_polling, daemon=True)
+    bot_thread.start()
+    print("Telegram bot started!")
+
     app.run(host="0.0.0.0", port=5000, debug=False)
