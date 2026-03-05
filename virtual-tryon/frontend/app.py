@@ -22,6 +22,7 @@ load_dotenv(os.path.join(PARENT_DIR, ".env"))
 
 from preprocess.humanparsing.run_parsing import Parsing
 from preprocess.openpose.run_openpose import OpenPose
+from preprocess.openpose.annotator.util import resize_image, HWC3
 
 app = Flask(__name__)
 
@@ -145,37 +146,61 @@ def upload_pil_to_s3(pil_image, bucket, key, fmt="PNG"):
 
 
 def generate_mask_from_parsing(parsed_image, category):
-    """Generate clothing mask from parsed segmentation image."""
+    """Generate clothing mask from parsed segmentation image.
+    
+    ATR label scheme from parsing_api.py:
+    0=Background, 1=Hat, 2=Hair, 3=Sunglasses, 4=Upper-clothes,
+    5=Skirt, 6=Pants, 7=Dress, 8=Belt, 9=Left-shoe, 10=Right-shoe,
+    11=Head, 12=Left-leg, 13=Right-leg, 14=Left-arm, 15=Right-arm,
+    16=Bag, 17=Scarf, 18=Neck (added by LIP model)
+    """
     parsing_array = np.array(parsed_image)
     if category == "upper":
-        mask = np.isin(parsing_array, [4]).astype(np.uint8) * 255
+        # Include upper clothes (4) + arms (14,15) to match the full pipeline's
+        # hole_fill + arm_mask approach from parsing_api.py
+        mask = np.isin(parsing_array, [4, 14, 15]).astype(np.uint8) * 255
     elif category == "lower":
         mask = np.isin(parsing_array, [5, 6]).astype(np.uint8) * 255
     elif category == "dress":
-        mask = np.isin(parsing_array, [7]).astype(np.uint8) * 255
+        mask = np.isin(parsing_array, [7, 4, 5, 6, 14, 15]).astype(np.uint8) * 255
     else:
-        mask = np.isin(parsing_array, [4, 5, 6]).astype(np.uint8) * 255
+        mask = np.isin(parsing_array, [4, 5, 6, 7, 14, 15]).astype(np.uint8) * 255
     return Image.fromarray(mask, mode="L")
 
 
 def preprocess_person_image(pil_image, user_id, request_id):
-    """Run human parsing and openpose, upload all results to S3."""
+    """Run human parsing and openpose using the preprocess folder functions, upload all results to S3."""
+    import cv2
+    import tempfile
+
     pil_image = pil_image.resize((768, 1024))
     prefix = f"{user_id}/{request_id}"
 
-    import tempfile
+    # --- Human Parsing via Parsing class (calls onnx_inference from parsing_api.py) ---
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = os.path.join(tmpdir, "input.jpg")
         pil_image.save(img_path)
         parsed_image, face_mask = parsing_model(tmpdir)
 
-    keypoints = openpose_model(pil_image, resolution=384)
-    pose_img = draw_pose_image(keypoints, 768, 1024)
+    # --- OpenPose via the preprocessor (OpenposeDetector) directly ---
+    # This gives us both keypoints AND the detected_map (proper colored pose image)
+    input_np = np.asarray(pil_image)
+    input_np = HWC3(input_np)
+    input_np = resize_image(input_np, 384)  # resizes to 384x512
+    H, W, C = input_np.shape
+    with torch.no_grad():
+        pose, detected_map = openpose_model.preprocessor(input_np, hand_and_face=False)
+    # detected_map is the proper colored OpenPose visualization at 384x512
+    # Resize to 768x1024 to match the person image
+    pose_img_np = cv2.resize(detected_map, (768, 1024), interpolation=cv2.INTER_LANCZOS4)
+    pose_img = Image.fromarray(pose_img_np)
 
+    # --- Generate masks from the refined parsing result ---
     upper_mask = generate_mask_from_parsing(parsed_image, "upper")
     lower_mask = generate_mask_from_parsing(parsed_image, "lower")
     dress_mask = generate_mask_from_parsing(parsed_image, "dress")
 
+    # --- Upload all to S3 ---
     upload_pil_to_s3(pil_image, PREPROCESSED_BUCKET, f"{prefix}/0_image.png")
     upload_pil_to_s3(pose_img, PREPROCESSED_BUCKET, f"{prefix}/1_pose.png")
     upload_pil_to_s3(upper_mask, PREPROCESSED_BUCKET, f"{prefix}/2_upper-mask.png")
@@ -183,30 +208,6 @@ def preprocess_person_image(pil_image, user_id, request_id):
     upload_pil_to_s3(dress_mask, PREPROCESSED_BUCKET, f"{prefix}/4_dress-mask.png")
 
 
-def draw_pose_image(keypoints, width, height):
-    """Draw a simple pose image from openpose keypoints."""
-    import cv2
-    canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    points = keypoints["pose_keypoints_2d"]
-    scaled = []
-    for pt in points:
-        x = int(pt[0] * width / 384)
-        y = int(pt[1] * height / 512)
-        scaled.append((x, y))
-    for pt in scaled:
-        if pt[0] > 0 or pt[1] > 0:
-            cv2.circle(canvas, pt, 4, (255, 255, 255), -1)
-    limbs = [
-        (0, 1), (1, 2), (2, 3), (3, 4), (1, 5), (5, 6), (6, 7),
-        (1, 8), (8, 9), (9, 10), (1, 11), (11, 12), (12, 13),
-        (0, 14), (0, 15), (14, 16), (15, 17)
-    ]
-    for a, b in limbs:
-        if a < len(scaled) and b < len(scaled):
-            pa, pb = scaled[a], scaled[b]
-            if (pa[0] > 0 or pa[1] > 0) and (pb[0] > 0 or pb[1] > 0):
-                cv2.line(canvas, pa, pb, (255, 255, 255), 2)
-    return Image.fromarray(canvas)
 
 
 # --- Flask Routes ---
