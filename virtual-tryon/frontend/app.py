@@ -28,9 +28,23 @@ from preprocess.openpose.run_openpose import OpenPose
 from preprocess.openpose.annotator.util import resize_image, HWC3
 
 # DensePose: used by official IDM-VTON for pose image generation
-# apply_net uses detectron2 + densepose to produce dp_segm visualization
-import apply_net
-from detectron2.data.detection_utils import convert_PIL_to_numpy, _apply_exif_orientation
+# Falls back to OpenPose skeleton if detectron2/densepose not available
+DENSEPOSE_CONFIG = os.path.join(PARENT_DIR, "configs", "densepose_rcnn_R_50_FPN_s1x.yaml")
+DENSEPOSE_MODEL = os.path.join(PARENT_DIR, "ckpt", "densepose", "model_final_162be9.pkl")
+USE_DENSEPOSE = False
+
+try:
+    import apply_net
+    from detectron2.data.detection_utils import convert_PIL_to_numpy, _apply_exif_orientation
+    if os.path.isfile(DENSEPOSE_MODEL) and os.path.isfile(DENSEPOSE_CONFIG):
+        USE_DENSEPOSE = True
+        print("[OK] DensePose available — using official IDM-VTON pose pipeline")
+    else:
+        print(f"[WARN] DensePose checkpoint not found at {DENSEPOSE_MODEL}")
+        print("[WARN] Falling back to OpenPose skeleton for pose image")
+except ImportError as e:
+    print(f"[WARN] detectron2/densepose not installed: {e}")
+    print("[WARN] Falling back to OpenPose skeleton for pose image")
 
 app = Flask(__name__)
 
@@ -57,17 +71,14 @@ GPU_ID = int(os.getenv("gpu_id", "0"))
 parsing_model = Parsing(GPU_ID)
 openpose_model = OpenPose(GPU_ID)
 
-# DensePose config — matches official IDM-VTON Gradio demo exactly
-DENSEPOSE_CONFIG = os.path.join(PARENT_DIR, "configs", "densepose_rcnn_R_50_FPN_s1x.yaml")
-DENSEPOSE_MODEL = os.path.join(PARENT_DIR, "ckpt", "densepose", "model_final_162be9.pkl")
-
 # Store telegram photos on disk
 TELEGRAM_PHOTOS_DIR = os.path.join(os.path.dirname(__file__), "telegram_photos")
 os.makedirs(TELEGRAM_PHOTOS_DIR, exist_ok=True)
 
 
 # ============================================================
-# Mask generation from IDM-VTON official utils_mask.py
+# Mask generation — exact copy from IDM-VTON utils_mask.py
+# https://github.com/yisol/IDM-VTON/blob/main/gradio_demo/utils_mask.py
 # ============================================================
 
 label_map = {
@@ -110,10 +121,7 @@ def mask_refine(mask):
 
 
 def get_mask_location(model_type, category, model_parse, keypoint, width=384, height=512):
-    """
-    Generate inpainting mask from parsing + keypoints.
-    Ported from IDM-VTON official gradio_demo/utils_mask.py.
-    """
+    """Exact copy of IDM-VTON gradio_demo/utils_mask.py get_mask_location()"""
     im_parse = model_parse.resize((width, height), Image.NEAREST)
     parse_array = np.array(im_parse)
 
@@ -315,7 +323,55 @@ def telegram_polling():
 
 
 # ============================================================
-# Preprocessing — matches IDM-VTON Gradio demo exactly
+# Pose image generation
+# ============================================================
+
+def generate_densepose_image(pil_image):
+    """
+    Generate DensePose dp_segm visualization — exact match of IDM-VTON Gradio demo.
+    From gradio_demo/app.py:
+        human_img_arg = _apply_exif_orientation(human_img.resize((384,512)))
+        human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
+        args = apply_net.create_argument_parser().parse_args(
+            ('show', './configs/densepose_rcnn_R_50_FPN_s1x.yaml',
+             './ckpt/densepose/model_final_162be9.pkl', 'dp_segm',
+             '-v', '--opts', 'MODEL.DEVICE', 'cuda'))
+        pose_img = args.func(args, human_img_arg)
+        pose_img = pose_img[:,:,::-1]
+        pose_img = Image.fromarray(pose_img).resize((768,1024))
+    """
+    human_img_arg = _apply_exif_orientation(pil_image.resize((384, 512)))
+    human_img_bgr = convert_PIL_to_numpy(human_img_arg, format="BGR")
+
+    args = apply_net.create_argument_parser().parse_args((
+        'show', DENSEPOSE_CONFIG, DENSEPOSE_MODEL, 'dp_segm',
+        '-v', '--opts', 'MODEL.DEVICE', 'cuda'
+    ))
+    pose_result = args.func(args, human_img_bgr)
+    pose_img_rgb = pose_result[:, :, ::-1]  # BGR to RGB
+    return Image.fromarray(pose_img_rgb).resize((768, 1024))
+
+
+def generate_openpose_image(pil_image):
+    """
+    Fallback: generate OpenPose skeleton visualization.
+    Uses OpenposeDetector directly to get detected_map (colored skeleton).
+    """
+    input_np = np.asarray(pil_image).copy()
+    input_np = HWC3(input_np)
+    input_np = resize_image(input_np, 384)
+
+    with torch.no_grad():
+        _, detected_map = openpose_model.preprocessor(input_np, hand_and_face=False)
+
+    # detected_map is BGR, convert to RGB
+    pose_img_rgb = cv2.cvtColor(detected_map, cv2.COLOR_BGR2RGB)
+    pose_img_resized = cv2.resize(pose_img_rgb, (768, 1024), interpolation=cv2.INTER_LANCZOS4)
+    return Image.fromarray(pose_img_resized)
+
+
+# ============================================================
+# Preprocessing — matches IDM-VTON Gradio demo start_tryon()
 # ============================================================
 
 def upload_pil_to_s3(pil_image, bucket, key, fmt="PNG"):
@@ -327,48 +383,35 @@ def upload_pil_to_s3(pil_image, bucket, key, fmt="PNG"):
 
 def preprocess_person_image(pil_image, user_id, request_id):
     """
-    Run the full IDM-VTON preprocessing pipeline — matches Gradio demo exactly:
+    Exact replication of IDM-VTON gradio_demo/app.py start_tryon() preprocessing:
 
-    1. Resize to 768x1024
-    2. Parsing at 384x512 → get labels + keypoints for mask generation
-    3. OpenPose at 384x512 → get keypoints for mask generation
-    4. get_mask_location() → proper inpainting masks with arm/neck handling
-    5. DensePose at 384x512 → dp_segm visualization for pose image
-       (This is the key difference — Gradio demo uses DensePose, not OpenPose skeleton)
-    6. Upload everything to S3
+    Step 1: human_img = human_img_orig.resize((768,1024))
+    Step 2: keypoints = openpose_model(human_img.resize((384,512)))
+    Step 3: model_parse, _ = parsing_model(human_img.resize((384,512)))
+    Step 4: mask, mask_gray = get_mask_location('hd', "upper_body", model_parse, keypoints)
+            mask = mask.resize((768,1024))
+    Step 5: DensePose at 384x512 for pose image (or OpenPose fallback)
+    Step 6: Upload to S3
     """
+    # Step 1: Resize to 768x1024
     pil_image = pil_image.resize((768, 1024))
     prefix = f"{user_id}/{request_id}"
 
-    # --- Step 1: Human Parsing at 384x512 ---
+    # Step 2: OpenPose keypoints at 384x512
+    # Gradio: keypoints = openpose_model(human_img.resize((384,512)))
+    keypoints = openpose_model(pil_image.resize((384, 512)))
+
+    # Step 3: Human Parsing at 384x512
+    # Gradio: model_parse, _ = parsing_model(human_img.resize((384,512)))
+    # Parsing expects a directory path (SimpleFolderDataset), so save to temp dir
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = os.path.join(tmpdir, "input.jpg")
         pil_image.resize((384, 512)).save(img_path)
         parsed_image, face_mask = parsing_model(tmpdir)
 
-    # --- Step 2: OpenPose keypoints at 384x512 (for mask generation only) ---
-    keypoints = openpose_model(pil_image.resize((384, 512)))
-
-    # --- Step 3: DensePose pose image at 384x512 ---
-    # This is exactly what the Gradio demo does:
-    #   human_img_arg = _apply_exif_orientation(human_img.resize((384,512)))
-    #   human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
-    #   args = apply_net.create_argument_parser().parse_args(('show', config, model, 'dp_segm', ...))
-    #   pose_img = args.func(args, human_img_arg)
-    #   pose_img = pose_img[:,:,::-1]  # BGR to RGB
-    human_img_for_densepose = _apply_exif_orientation(pil_image.resize((384, 512)))
-    human_img_bgr = convert_PIL_to_numpy(human_img_for_densepose, format="BGR")
-
-    args = apply_net.create_argument_parser().parse_args((
-        'show', DENSEPOSE_CONFIG, DENSEPOSE_MODEL, 'dp_segm',
-        '-v', '--opts', 'MODEL.DEVICE', 'cuda'
-    ))
-    pose_result = args.func(args, human_img_bgr)
-    # pose_result is BGR, convert to RGB then resize to 768x1024
-    pose_img_rgb = pose_result[:, :, ::-1]
-    pose_img = Image.fromarray(pose_img_rgb).resize((768, 1024))
-
-    # --- Step 4: Generate masks using get_mask_location ---
+    # Step 4: Generate masks using get_mask_location (from utils_mask.py)
+    # Gradio: mask, mask_gray = get_mask_location('hd', "upper_body", model_parse, keypoints)
+    #         mask = mask.resize((768,1024))
     upper_mask, _ = get_mask_location('hd', 'upper_body', parsed_image, keypoints)
     lower_mask, _ = get_mask_location('hd', 'lower_body', parsed_image, keypoints)
     dress_mask, _ = get_mask_location('hd', 'dresses', parsed_image, keypoints)
@@ -377,7 +420,13 @@ def preprocess_person_image(pil_image, user_id, request_id):
     lower_mask = lower_mask.resize((768, 1024), Image.NEAREST)
     dress_mask = dress_mask.resize((768, 1024), Image.NEAREST)
 
-    # --- Step 5: Upload all preprocessed images to S3 ---
+    # Step 5: Pose image — DensePose (official) or OpenPose (fallback)
+    if USE_DENSEPOSE:
+        pose_img = generate_densepose_image(pil_image)
+    else:
+        pose_img = generate_openpose_image(pil_image)
+
+    # Step 6: Upload all preprocessed images to S3
     upload_pil_to_s3(pil_image, PREPROCESSED_BUCKET, f"{prefix}/0_image.png")
     upload_pil_to_s3(pose_img, PREPROCESSED_BUCKET, f"{prefix}/1_pose.png")
     upload_pil_to_s3(upper_mask, PREPROCESSED_BUCKET, f"{prefix}/2_upper-mask.png")
@@ -531,5 +580,6 @@ if __name__ == "__main__":
         t.start()
         print("Telegram bot polling started.")
 
+    print(f"DensePose enabled: {USE_DENSEPOSE}")
     print("Starting Flask server on port 5000...")
     app.run(host="0.0.0.0", port=5000, debug=False)
