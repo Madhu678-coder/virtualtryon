@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastFit Footwear Try-On Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            color: #1a365d;
+            margin-bottom: 0.5rem;
+            font-size: 1.8rem;
+        }
+        .subtitle {
+            text-align: center;
+            color: #718096;
+            margin-bottom: 2rem;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 1.5rem;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1.5rem;
+        }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+        .upload-box {
+            border: 2px dashed #cbd5e0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            min-height: 250px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .upload-box:hover { border-color: #4299e1; background: #ebf8ff; }
+        .upload-box.has-image { border-color: #48bb78; border-style: solid; }
+        .upload-box img {
+            max-width: 100%;
+            max-height: 200px;
+            border-radius: 4px;
+            object-fit: contain;
+        }
+        .upload-box label { font-weight: 600; color: #4a5568; margin-bottom: 0.5rem; }
+        .upload-box p { color: #a0aec0; font-size: 0.85rem; }
+        input[type="file"] { display: none; }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 1.5rem;
+        }
+        .controls label { font-weight: 600; color: #4a5568; }
+        select, input[type="text"] {
+            padding: 0.5rem 1rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 0.95rem;
+        }
+        .btn {
+            background: #2b6cb0;
+            color: white;
+            border: none;
+            padding: 0.75rem 2rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #2c5282; }
+        .btn:disabled { background: #a0aec0; cursor: not-allowed; }
+        .result-box {
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .result-box img { max-width: 100%; max-height: 500px; object-fit: contain; }
+        .status {
+            text-align: center;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            font-weight: 500;
+        }
+        .status.pending { background: #fefcbf; color: #975a16; }
+        .status.success { background: #c6f6d5; color: #276749; }
+        .status.error { background: #fed7d7; color: #9b2c2c; }
+        .config-row {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .config-row label { min-width: 120px; }
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #edf2f7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>👟 FastFit Footwear Try-On</h1>
+        <p class="subtitle">Test footwear and bags virtual try-on powered by FastFit</p>
+
+        <!-- Configuration -->
+        <div class="card">
+            <div class="section-title">⚙️ Configuration</div>
+            <div class="config-row">
+                <label>SQS Queue URL:</label>
+                <input type="text" id="queueUrl" style="flex:1" placeholder="https://sqs.us-east-1.amazonaws.com/..." value="">
+            </div>
+            <div class="config-row">
+                <label>DynamoDB Table:</label>
+                <input type="text" id="dynamoTable" value="vton-collection" style="width:200px">
+            </div>
+            <div class="config-row">
+                <label>S3 Output Bucket:</label>
+                <input type="text" id="outputBucket" value="groome-results-1" style="width:200px">
+            </div>
+            <div class="config-row">
+                <label>Region:</label>
+                <input type="text" id="awsRegion" value="us-east-1" style="width:150px">
+            </div>
+        </div>
+
+        <!-- Upload Section -->
+        <div class="card">
+            <div class="section-title">📤 Upload Images</div>
+            <div class="grid">
+                <div>
+                    <div class="upload-box" id="personBox" onclick="document.getElementById('personInput').click()">
+                        <label>👤 Person Image</label>
+                        <p>Click to upload full-body photo</p>
+                        <input type="file" id="personInput" accept="image/*" onchange="previewImage(this, 'personBox')">
+                    </div>
+                </div>
+                <div>
+                    <div class="upload-box" id="garmentBox" onclick="document.getElementById('garmentInput').click()">
+                        <label>👟 Shoe / Bag Image</label>
+                        <p>Click to upload product image</p>
+                        <input type="file" id="garmentInput" accept="image/*" onchange="previewImage(this, 'garmentBox')">
+                    </div>
+                </div>
+                <div>
+                    <div class="result-box" id="resultBox">
+                        <p style="color:#a0aec0">Result will appear here</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <label>Category:</label>
+                <select id="category">
+                    <option value="shoes">Shoes / Footwear</option>
+                    <option value="bags">Bags</option>
+                </select>
+                <button class="btn" id="submitBtn" onclick="submitTryOn()">🚀 Try On</button>
+            </div>
+
+            <div id="statusDiv"></div>
+        </div>
+    </div>
+
+    <!-- AWS SDK -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1692.0.min.js"></script>
+    <script>
+        let personFile = null;
+        let garmentFile = null;
+        let pollInterval = null;
+
+        function previewImage(input, boxId) {
+            const box = document.getElementById(boxId);
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    box.innerHTML = `<img src="${e.target.result}">`;
+                    box.classList.add('has-image');
+                };
+                reader.readAsDataURL(input.files[0]);
+
+                if (boxId === 'personBox') personFile = input.files[0];
+                if (boxId === 'garmentBox') garmentFile = input.files[0];
+            }
+        }
+
+        function setStatus(msg, type) {
+            const div = document.getElementById('statusDiv');
+            div.innerHTML = `<div class="status ${type}">${msg}</div>`;
+        }
+
+        function generateId() {
+            return Math.random().toString(36).substring(2, 10);
+        }
+
+        async function submitTryOn() {
+            if (!personFile || !garmentFile) {
+                setStatus('❌ Please upload both person and garment images', 'error');
+                return;
+            }
+
+            const region = document.getElementById('awsRegion').value;
+            const queueUrl = document.getElementById('queueUrl').value;
+            const tableName = document.getElementById('dynamoTable').value;
+            const outputBucket = document.getElementById('outputBucket').value;
+            const category = document.getElementById('category').value;
+
+            if (!queueUrl) {
+                setStatus('❌ Please enter the SQS Queue URL', 'error');
+                return;
+            }
+
+            // Configure AWS SDK (uses browser credentials or Cognito)
+            AWS.config.update({ region: region });
+
+            // For testing, prompt for credentials if not configured
+            if (!AWS.config.credentials || !AWS.config.credentials.accessKeyId) {
+                const accessKey = prompt('Enter AWS Access Key ID:');
+                const secretKey = prompt('Enter AWS Secret Access Key:');
+                if (!accessKey || !secretKey) {
+                    setStatus('❌ AWS credentials required', 'error');
+                    return;
+                }
+                AWS.config.update({
+                    accessKeyId: accessKey,
+                    secretAccessKey: secretKey,
+                    region: region
+                });
+            }
+
+            const s3 = new AWS.S3();
+            const sqs = new AWS.SQS();
+            const dynamodb = new AWS.DynamoDB.DocumentClient();
+
+            const userId = generateId();
+            const requestId = generateId();
+            const productBucket = 'product-images-groome-1';
+            const rawBucket = 'product-images-groome-1';
+            const preprocessedBucket = 'vton-preprocessed-1';
+
+            setStatus('⏳ Uploading images to S3...', 'pending');
+            document.getElementById('submitBtn').disabled = true;
+
+            try {
+                // Upload person image
+                const personKey = `${userId}/${requestId}.png`;
+                const personBuffer = await fileToArrayBuffer(personFile);
+                await s3.putObject({
+                    Bucket: rawBucket,
+                    Key: personKey,
+                    Body: personBuffer,
+                    ContentType: 'image/png'
+                }).promise();
+
+                // Upload garment image
+                const garmentKey = `${userId}/${requestId}/garment.jpg`;
+                const garmentBuffer = await fileToArrayBuffer(garmentFile);
+                await s3.putObject({
+                    Bucket: productBucket,
+                    Key: garmentKey,
+                    Body: garmentBuffer,
+                    ContentType: 'image/jpeg'
+                }).promise();
+
+                setStatus('⏳ Creating DynamoDB record...', 'pending');
+
+                // Create DynamoDB record
+                await dynamodb.put({
+                    TableName: tableName,
+                    Item: {
+                        user_id: userId,
+                        request_id: requestId,
+                        category: category,
+                        customer_images: `s3://${preprocessedBucket}/${userId}/${requestId}`,
+                        product_images: [`s3://${productBucket}/${garmentKey}`],
+                        output_image: `s3://${outputBucket}/vton_api_outputs`,
+                        pre_processing_status: 'COMPLETED',
+                        vton_process_status: 'PENDING',
+                        created_at: new Date().toISOString()
+                    }
+                }).promise();
+
+                setStatus('⏳ Sending SQS message...', 'pending');
+
+                // Send SQS message
+                await sqs.sendMessage({
+                    QueueUrl: queueUrl,
+                    MessageBody: JSON.stringify({
+                        user_id: userId,
+                        request_id: requestId
+                    })
+                }).promise();
+
+                setStatus(`⏳ Processing... (user_id: ${userId}, request_id: ${requestId})`, 'pending');
+
+                // Poll for result
+                pollForResult(dynamodb, tableName, userId, requestId, s3, outputBucket);
+
+            } catch (err) {
+                setStatus(`❌ Error: ${err.message}`, 'error');
+                document.getElementById('submitBtn').disabled = false;
+            }
+        }
+
+        function pollForResult(dynamodb, tableName, userId, requestId, s3, outputBucket) {
+            let attempts = 0;
+            const maxAttempts = 60; // 5 minutes max
+
+            pollInterval = setInterval(async () => {
+                attempts++;
+                if (attempts > maxAttempts) {
+                    clearInterval(pollInterval);
+                    setStatus('❌ Timeout: Processing took too long', 'error');
+                    document.getElementById('submitBtn').disabled = false;
+                    return;
+                }
+
+                try {
+                    const result = await dynamodb.get({
+                        TableName: tableName,
+                        Key: { user_id: userId, request_id: requestId }
+                    }).promise();
+
+                    const item = result.Item;
+                    if (!item) return;
+
+                    const status = item.vton_process_status;
+
+                    if (status === 'COMPLETED' && item.vton_s3_uri) {
+                        clearInterval(pollInterval);
+
+                        // Get presigned URL for result
+                        const s3Uri = item.vton_s3_uri;
+                        const parts = s3Uri.replace('s3://', '').split('/');
+                        const bucket = parts[0];
+                        const key = parts.slice(1).join('/');
+
+                        const url = s3.getSignedUrl('getObject', {
+                            Bucket: bucket,
+                            Key: key,
+                            Expires: 3600
+                        });
+
+                        document.getElementById('resultBox').innerHTML = `<img src="${url}">`;
+                        setStatus('✅ Try-on complete!', 'success');
+                        document.getElementById('submitBtn').disabled = false;
+
+                    } else if (status === 'FAILED') {
+                        clearInterval(pollInterval);
+                        setStatus('❌ Processing failed on server', 'error');
+                        document.getElementById('submitBtn').disabled = false;
+                    } else {
+                        setStatus(`⏳ Processing... (attempt ${attempts}/${maxAttempts})`, 'pending');
+                    }
+                } catch (err) {
+                    // Ignore polling errors, keep trying
+                }
+            }, 5000); // Poll every 5 seconds
+        }
+
+        function fileToArrayBuffer(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsArrayBuffer(file);
+            });
+        }
+    </script>
+</body>
+</html>
