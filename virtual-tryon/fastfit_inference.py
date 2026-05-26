@@ -359,13 +359,35 @@ def run_fastfit(
 
     try:
         # Load person image from S3
+        # For FastFit, we use the raw uploaded image directly
+        # (FastFit does its own preprocessing - pose, parsing, masking)
         bucket_name = data['human_bucket']
         folder = data['human_folder']
         logger.info(
             "Loading person images from s3://%s/%s", bucket_name, folder
         )
-        customer_images = get_pil_images_from_s3_folder(bucket_name, folder)
-        person_image = customer_images['pil_img_dict'].get('image')
+
+        # Try to get from preprocessed folder first
+        person_image = None
+        try:
+            customer_images = get_pil_images_from_s3_folder(bucket_name, folder)
+            person_image = customer_images['pil_img_dict'].get('image')
+        except Exception:
+            pass
+
+        # If not found in preprocessed, load raw image directly
+        if person_image is None:
+            # The raw image is at: {raw_bucket}/{user_id}/{request_id}.png
+            raw_bucket = os.getenv("raw_images_bucket", "product-images-groome-1")
+            # folder is like "user_id/request_id", raw image is "user_id/request_id.png"
+            raw_key = f"{folder}.png"
+            logger.info(
+                "Trying raw image from s3://%s/%s", raw_bucket, raw_key
+            )
+            try:
+                person_image = download_pil_image(raw_bucket, raw_key)
+            except Exception:
+                pass
 
         if person_image is None:
             raise VTONProcessingError(

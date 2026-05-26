@@ -123,10 +123,6 @@ HTML_PAGE = """
         <h1>👟 FastFit Footwear Try-On</h1>
         <p class="subtitle">Test footwear and bags virtual try-on</p>
 
-        <div class="info">
-            <p>🔒 Using EC2 IAM role for AWS access. No credentials needed.</p>
-        </div>
-
         <div class="card">
             <div class="grid">
                 <div>
@@ -295,7 +291,7 @@ def submit_tryon():
             "user_id": user_id,
             "request_id": request_id,
             "category": category,
-            "customer_images": f"s3://{PREPROCESSED_BUCKET}/{user_id}/{request_id}",
+            "customer_images": f"s3://{RAW_IMAGES_BUCKET}/{user_id}/{request_id}",
             "product_images": [f"s3://{PRODUCT_BUCKET}/{garment_key}"],
             "output_image": f"s3://{OUTPUT_BUCKET}/{OUTPUT_FOLDER}",
             "pre_processing_status": "COMPLETED",
