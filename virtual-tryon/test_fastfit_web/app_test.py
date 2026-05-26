@@ -125,7 +125,6 @@ HTML_PAGE = """
 
         <div class="info">
             <p>🔒 Using EC2 IAM role for AWS access. No credentials needed.</p>
-            <p>📡 Queue: {{ queue_url[:60] }}...</p>
         </div>
 
         <div class="card">
@@ -134,15 +133,15 @@ HTML_PAGE = """
                     <div class="upload-box" id="personBox" onclick="document.getElementById('personInput').click()">
                         <div class="label">👤 Person Image</div>
                         <p>Upload full-body photo</p>
-                        <input type="file" id="personInput" accept="image/*" onchange="previewImage(this, 'personBox')">
                     </div>
+                    <input type="file" id="personInput" accept="image/*" onchange="previewImage(this, 'personBox')">
                 </div>
                 <div>
                     <div class="upload-box" id="garmentBox" onclick="document.getElementById('garmentInput').click()">
                         <div class="label">👟 Shoe / Bag</div>
                         <p>Upload product image</p>
-                        <input type="file" id="garmentInput" accept="image/*" onchange="previewImage(this, 'garmentBox')">
                     </div>
+                    <input type="file" id="garmentInput" accept="image/*" onchange="previewImage(this, 'garmentBox')">
                 </div>
                 <div>
                     <div class="result-box" id="resultBox">
@@ -182,11 +181,11 @@ HTML_PAGE = """
         }
 
         async function submitTryOn() {
-            const personInput = document.getElementById('personInput');
-            const garmentInput = document.getElementById('garmentInput');
-            const category = document.getElementById('category').value;
+            var personInput = document.getElementById('personInput');
+            var garmentInput = document.getElementById('garmentInput');
+            var category = document.getElementById('category').value;
 
-            if (!personInput.files[0] || !garmentInput.files[0]) {
+            if (!personInput.files || !personInput.files[0] || !garmentInput.files || !garmentInput.files[0]) {
                 setStatus('❌ Please upload both images', 'error');
                 return;
             }
