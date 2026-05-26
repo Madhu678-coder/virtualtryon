@@ -1,3 +1,24 @@
+"""
+FastFit SQS Poller - Dedicated footwear/bags try-on worker.
+
+This is a standalone worker designed to run on a separate EC2 instance
+(e.g., g4dn.xlarge with T4 16GB) specifically for footwear and bags
+try-on using the FastFit model.
+
+It polls the same SQS queue as main.py but only processes messages
+where category is 'shoes', 'footwear', or 'bags'. Other categories
+are skipped (left for the IDM-VTON worker to handle).
+
+Usage:
+    python main_fastfit.py
+
+Environment Variables (in .env):
+    queue_url: SQS queue URL to poll
+    vton_table: DynamoDB table name
+    fastfit_repo_path: Path to cloned FastFit repo
+    fastfit_model_id: HuggingFace model ID for FastFit
+"""
+
 import json
 import os
 import traceback
@@ -16,7 +37,7 @@ from aws_utils import (
     upload_pil_image_to_s3,
 )
 from data_loader import fetch_data_from_db
-from inference import run_vton
+from fastfit_inference import run_fastfit, get_fastfit_pipeline
 from logging_config import logger
 from vton_errors import (
     DataLoadingError,
@@ -24,17 +45,23 @@ from vton_errors import (
     MissingDataError,
 )
 
-# Categories handled by FastFit worker (not this worker)
-FASTFIT_CATEGORIES = {"shoes", "footwear", "bags", "bag"}
-
-# Initialize environment variables
-queue_url = os.getenv('queue_url', "https://sqs.ap-southeast-2.amazonaws.com/730335611421/VTON")
+# Environment variables
+queue_url = os.getenv(
+    'queue_url',
+    "https://sqs.ap-southeast-2.amazonaws.com/730335611421/VTON"
+)
 VTON_TABLE = os.getenv('vton_table', "vton-collection")
 VTON_PAR_KEY_NAME = os.getenv('vton_par_key_name', 'user_id')
 VTON_SORT_KEY_NAME = os.getenv('vton_sort_key_name', 'request_id')
+DEFAULT_VTON_OUTPUT_BUCKET = os.getenv(
+    "default_vton_output_bucket", "groome-results"
+)
+DEFAULT_VTON_OUTPUT_FOLDER = os.getenv(
+    "default_vton_output_folder", "vton_api_outputs"
+)
 
-DEFAULT_VTON_OUTPUT_BUCKET = os.getenv("default_vton_output_bucket", "groome-results")
-DEFAULT_VTON_OUTPUT_FOLDER = os.getenv("default_vton_output_folder", "vton_api_outputs")
+# Categories handled by this worker
+FASTFIT_CATEGORIES = {"shoes", "footwear", "bags", "bag"}
 
 # Initialize SQS client
 sqs = boto3.client('sqs')
@@ -52,14 +79,7 @@ def update_vton_status(
     s3_uri: str = "",
     status: str = "FAILED"
 ) -> None:
-    """Update VTON status in DynamoDB.
-
-    Args:
-        user_id: User identifier
-        request_id: Request identifier
-        s3_uri: S3 URI of processed image
-        status: Processing status
-    """
+    """Update VTON status in DynamoDB."""
     update_dynamodb_item(
         table_name=VTON_TABLE,
         partition_key_name=VTON_PAR_KEY_NAME,
@@ -78,16 +98,10 @@ def handle_sqs_error(
     post_data: Dict,
     error_msg: str
 ) -> None:
-    """Handle SQS processing errors.
-
-    Args:
-        error: Exception that occurred
-        post_data: Message data
-        error_msg: Error message to log
-    """
+    """Handle SQS processing errors."""
     logger.error(error_msg, error)
     logger.error(traceback.format_exc())
-    
+
     if post_data.get("request_id"):
         update_vton_status(
             post_data.get("user_id"),
@@ -101,17 +115,7 @@ def upload_to_s3(
     upload_prefix: str,
     filename: Optional[List[str]] = None
 ) -> List[Dict]:
-    """Upload processed images to S3.
-
-    Args:
-        res_pil_images: List of processed PIL images
-        upload_bucket_name: Target S3 bucket name
-        upload_prefix: S3 prefix/folder path
-        filename: Optional list of filenames
-
-    Returns:
-        List of dictionaries with upload details
-    """
+    """Upload processed images to S3."""
     extn = '.png'
     res_images = []
 
@@ -146,43 +150,8 @@ def upload_to_s3(
     return res_images
 
 
-def process_upper_lower_garment(post_data: Dict) -> List:
-    """Process both upper and lower garments.
-
-    Args:
-        post_data: Processing data dictionary
-
-    Returns:
-        List of processed images
-    """
-    # Process upper garment
-    data1 = {
-        "human_bucket": post_data["human_bucket"],
-        "human_folder": post_data["human_folder"],
-        "category": "upper",
-        "cloth_bucket": post_data["cloth_bucket"],
-        "cloth_path": post_data["cloth_path"],
-    }
-    result1 = run_vton(data1, "upper", 0)
-    logger.info("Processed upper garment successfully")
-    res_pil_img = result1[0]['pil_image']
-
-    # Process lower garment with upper result
-    data2 = {
-        "human_bucket": post_data["human_bucket"],
-        "human_folder": post_data["human_folder"],
-        "category": "lower",
-        "cloth_bucket": post_data["cloth_bucket"],
-        "cloth_path": post_data["cloth_path"],
-    }
-    result2 = run_vton(data2, "lower", 1, res_pil_img)
-    logger.info("Processed lower garment successfully")
-
-    return result2 if result2 else "Processing failed"
-
-
-def process_single_garment(post_data: Dict) -> List:
-    """Process a single garment category.
+def process_footwear_bags(post_data: Dict) -> List:
+    """Process footwear or bags try-on using FastFit.
 
     Args:
         post_data: Processing data dictionary
@@ -197,10 +166,10 @@ def process_single_garment(post_data: Dict) -> List:
         "cloth_bucket": post_data["cloth_bucket"],
         "cloth_path": post_data["cloth_path"],
     }
-    return run_vton(data, post_data["category"])
+    return run_fastfit(data, post_data["category"])
 
 
-def process_sqs_message(data: Dict) -> bool:
+def process_sqs_message(data: Dict) -> Optional[bool]:
     """Process a single SQS message.
 
     Args:
@@ -209,10 +178,7 @@ def process_sqs_message(data: Dict) -> bool:
     Returns:
         True if processed successfully
         False if preprocessing is pending
-        None if category handled by FastFit worker
-
-    Raises:
-        Various exceptions based on processing status
+        None if category is not handled by this worker (skip)
     """
     try:
         sqs_msg = PostData(**data)
@@ -229,31 +195,31 @@ def process_sqs_message(data: Dict) -> bool:
         logger.error("%s: %s", msg, err)
         raise DataLoadingError(f"{msg}: {err}")
 
+    # Check if this category is handled by FastFit
+    category = post_data.get("category", "").lower()
+    if category not in FASTFIT_CATEGORIES:
+        logger.info(
+            "Category '%s' not handled by FastFit worker, skipping.",
+            category
+        )
+        return None  # Signal to not delete message
+
     if post_data['pre_processing_status'] in ["PENDING", ""]:
         logger.info("Pre-processing is pending")
         return False
     elif post_data['pre_processing_status'] == "FAILED":
         raise DataLoadingError("Pre-processing failed")
 
-    # Skip categories handled by FastFit worker
-    category = post_data.get("category", "").lower()
-    if category in FASTFIT_CATEGORIES:
-        logger.info(
-            "Category '%s' handled by FastFit worker, skipping.", category
-        )
-        return None  # Signal to not delete message
-
     try:
-        if post_data["category"] == 'upper_lower':
-            result = process_upper_lower_garment(post_data)
-        else:
-            result = process_single_garment(post_data)
+        result = process_footwear_bags(post_data)
 
-        output_bucket = (post_data.get('output_bucket') or
-                        DEFAULT_VTON_OUTPUT_BUCKET)
-        output_folder = (post_data.get("output_folder") or
-                        DEFAULT_VTON_OUTPUT_FOLDER)
-        
+        output_bucket = (
+            post_data.get('output_bucket') or DEFAULT_VTON_OUTPUT_BUCKET
+        )
+        output_folder = (
+            post_data.get("output_folder") or DEFAULT_VTON_OUTPUT_FOLDER
+        )
+
         result_s3 = upload_to_s3(
             result,
             output_bucket,
@@ -268,7 +234,7 @@ def process_sqs_message(data: Dict) -> bool:
             result_s3[0]['s3_uri'],
             "COMPLETED"
         )
-        logger.info("Updated DynamoDB with VTON results")
+        logger.info("Updated DynamoDB with FastFit results")
 
     except (DataLoadingError, VTONProcessingError) as err:
         logger.error("Processing error: %s", err)
@@ -284,17 +250,25 @@ def process_sqs_message(data: Dict) -> bool:
 
 
 def poll_sqs(queue_url: str) -> None:
-    """Poll SQS queue for messages.
+    """Poll SQS queue for footwear/bags messages.
 
-    Args:
-        queue_url: SQS queue URL
+    Only processes messages with categories in FASTFIT_CATEGORIES.
+    Messages with other categories are left in the queue for the
+    IDM-VTON worker to handle.
     """
+    # Pre-load the model on startup
+    logger.info("Pre-loading FastFit model...")
+    pipeline = get_fastfit_pipeline()
+    pipeline.load_model()
+    logger.info("FastFit model ready. Starting SQS polling...")
+
     while True:
         try:
             response = sqs.receive_message(
                 QueueUrl=queue_url,
                 MaxNumberOfMessages=1,
-                WaitTimeSeconds=10
+                WaitTimeSeconds=10,
+                VisibilityTimeout=300,  # 5 min timeout for processing
             )
         except Exception as err:
             logger.error("Error receiving SQS messages: %s", err)
@@ -303,29 +277,31 @@ def poll_sqs(queue_url: str) -> None:
             continue
 
         messages = response.get('Messages', [])
-        
+
         for message in messages:
             receipt_handle = message['ReceiptHandle']
+            post_data = {}
+
             try:
                 post_data = json.loads(message['Body'])
                 logger.info(
-                    "Processing message ID: %s",
-                    message['MessageId']
+                    "Received message ID: %s", message['MessageId']
                 )
                 logger.info(post_data)
 
                 result = process_sqs_message(post_data)
 
-                # None = category handled by FastFit worker, skip
                 if result is None:
+                    # Not our category — don't delete, let it return
+                    # to queue for IDM-VTON worker
                     logger.info(
-                        "Skipping FastFit category | Message ID: %s",
+                        "Skipping non-footwear message: %s",
                         message['MessageId']
                     )
                     continue
 
-                # False = preprocessing pending, skip
                 if result is False:
+                    # Preprocessing pending — don't delete
                     logger.info(
                         "Pre-processing pending | Message ID: %s",
                         message['MessageId']
@@ -335,9 +311,7 @@ def poll_sqs(queue_url: str) -> None:
             except (MissingDataError, DataLoadingError,
                     VTONProcessingError) as err:
                 handle_sqs_error(
-                    err,
-                    post_data,
-                    "Error processing message"
+                    err, post_data, "Error processing message"
                 )
             except Exception as err:
                 handle_sqs_error(
@@ -346,6 +320,7 @@ def poll_sqs(queue_url: str) -> None:
                     f"Error processing message {message['MessageId']}"
                 )
 
+            # Delete message after successful processing or error
             sqs.delete_message(
                 QueueUrl=queue_url,
                 ReceiptHandle=receipt_handle
@@ -360,15 +335,10 @@ def poll_sqs(queue_url: str) -> None:
         sleep(5)
 
 
-def start_polling(queue_url: str) -> None:
-    """Start SQS polling process.
-
-    Args:
-        queue_url: SQS queue URL
-    """
-    logger.info("Starting to poll SQS queue: %s", queue_url)
-    poll_sqs(queue_url)
-
-
 if __name__ == "__main__":
-    start_polling(queue_url)
+    logger.info("=" * 60)
+    logger.info("FastFit Worker Starting")
+    logger.info("Supported categories: %s", FASTFIT_CATEGORIES)
+    logger.info("Queue URL: %s", queue_url)
+    logger.info("=" * 60)
+    poll_sqs(queue_url)
