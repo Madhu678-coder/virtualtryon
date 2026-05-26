@@ -195,17 +195,57 @@ class FastFitWrapper:
         densepose_arr: np.ndarray,
         lip_arr: np.ndarray,
         atr_arr: np.ndarray,
+        category: str = "shoes",
     ) -> Image.Image:
-        """Generate agnostic mask for try-on region."""
-        from parse_utils import multi_ref_cloth_agnostic_mask
-
-        return multi_ref_cloth_agnostic_mask(
-            densepose_arr,
-            lip_arr,
-            atr_arr,
-            square_cloth_mask=False,
-            horizon_expand=True,
+        """Generate mask for the specific category only.
+        
+        For shoes: only mask the foot/shoe region
+        For bags: only mask the bag region
+        For clothing: mask the full outfit area
+        """
+        from parse_utils.automasker import (
+            part_mask_of,
+            hull_mask,
+            DENSE_INDEX_MAP,
+            LIP_MAPPING,
+            ATR_MAPPING,
         )
+        import cv2
+
+        w, h = densepose_arr.shape[:2]
+        dilate_kernel = max(w, h) // 500
+        dilate_kernel = dilate_kernel if dilate_kernel % 2 == 1 else dilate_kernel + 1
+        dilate_kernel = np.ones((dilate_kernel, dilate_kernel), np.uint8)
+
+        if category in ("shoes", "footwear", "shoe"):
+            # Only mask the shoe/foot region
+            shoe_mask = (
+                part_mask_of(["Left-shoe", "Right-shoe"], lip_arr, LIP_MAPPING)
+                | part_mask_of(["Left-shoe", "Right-shoe"], atr_arr, ATR_MAPPING)
+            )
+            # Also include feet from densepose
+            feet_mask = part_mask_of(["feet"], densepose_arr, DENSE_INDEX_MAP)
+            mask_area = shoe_mask | feet_mask
+            # Dilate to cover edges
+            mask_area = cv2.dilate(mask_area.astype(np.uint8), dilate_kernel, iterations=3)
+            return Image.fromarray(mask_area * 255)
+
+        elif category in ("bags", "bag"):
+            # Only mask the bag region
+            bag_mask = (
+                part_mask_of(["Bag"], lip_arr, LIP_MAPPING)
+                | part_mask_of(["Bag"], atr_arr, ATR_MAPPING)
+            )
+            mask_area = cv2.dilate(bag_mask.astype(np.uint8), dilate_kernel, iterations=3)
+            return Image.fromarray(mask_area * 255)
+
+        else:
+            # For clothing, use the full multi-ref mask
+            from parse_utils import multi_ref_cloth_agnostic_mask
+            return multi_ref_cloth_agnostic_mask(
+                densepose_arr, lip_arr, atr_arr,
+                square_cloth_mask=False, horizon_expand=True,
+            )
 
     def prepare_reference_images(
         self,
@@ -286,8 +326,8 @@ class FastFitWrapper:
                 self.preprocess_person(person_image)
             )
 
-            # Generate mask
-            mask_img = self.generate_mask(densepose_arr, lip_arr, atr_arr)
+            # Generate mask — category-specific (shoes only masks feet, etc.)
+            mask_img = self.generate_mask(densepose_arr, lip_arr, atr_arr, category)
 
             # Prepare reference images
             ref_images, ref_labels, ref_attention_masks = (
