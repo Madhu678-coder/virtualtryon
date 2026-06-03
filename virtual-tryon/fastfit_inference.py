@@ -324,8 +324,9 @@ class FastFitWrapper:
         num_inference_steps = num_inference_steps or FASTFIT_NUM_STEPS
         guidance_scale = guidance_scale or FASTFIT_GUIDANCE_SCALE
 
-        # Store original dimensions to restore later
-        original_size = person_image.size  # (width, height)
+        # Store original image for compositing back
+        original_image = person_image.convert("RGB")
+        original_size = original_image.size  # (width, height)
 
         logger.info(
             "Running FastFit inference: category=%s, steps=%d, guidance=%.1f, original_size=%s",
@@ -365,10 +366,40 @@ class FastFitWrapper:
 
             if isinstance(result, list) and len(result) > 0:
                 result_img = result[0]
-                # Resize back to original dimensions
-                result_img = result_img.resize(original_size, Image.LANCZOS)
-                logger.info("FastFit inference completed. Resized to original: %s", original_size)
-                return result_img
+
+                # Composite result back into original image
+                # The processed region was center-cropped to 3:4 ratio
+                width, height = original_size
+                target_ratio = 3 / 4
+                current_ratio = width / height
+
+                if current_ratio > target_ratio:
+                    # Original was wider — crop was from sides
+                    crop_width = int(height * target_ratio)
+                    crop_height = height
+                    left = (width - crop_width) // 2
+                    top = 0
+                else:
+                    # Original was taller — crop was from top/bottom
+                    crop_width = width
+                    crop_height = int(width / target_ratio)
+                    left = 0
+                    top = (height - crop_height) // 2
+
+                # Resize result to the cropped region size
+                result_img = result_img.resize(
+                    (crop_width, crop_height), Image.LANCZOS
+                )
+
+                # Paste back onto original image
+                output_img = original_image.copy()
+                output_img.paste(result_img, (left, top))
+
+                logger.info(
+                    "FastFit inference completed. Composited back to original: %s",
+                    original_size,
+                )
+                return output_img
 
             raise VTONProcessingError("FastFit returned no valid image")
 
