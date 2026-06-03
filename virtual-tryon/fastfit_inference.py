@@ -158,16 +158,6 @@ class FastFitWrapper:
             except Exception:
                 logger.info("xformers not available, using default attention.")
 
-            # Enable torch.compile for faster inference (PyTorch 2.x)
-            try:
-                if hasattr(self.pipeline, 'unet'):
-                    self.pipeline.unet = torch.compile(
-                        self.pipeline.unet, mode="reduce-overhead"
-                    )
-                    logger.info("torch.compile enabled for UNet.")
-            except Exception:
-                logger.info("torch.compile not available, skipping.")
-
             self.is_loaded = True
             logger.info("FastFit model loaded successfully.")
 
