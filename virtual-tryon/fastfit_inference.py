@@ -115,7 +115,7 @@ class FastFitWrapper:
                 pretrained_model_name_or_path=os.path.join(
                     FASTFIT_UTIL_MODEL_PATH, "DWPose"
                 ),
-                device="cpu",
+                device=self.device,  # GPU instead of CPU for speed
             )
 
             logger.info("Loading DensePose detector...")
@@ -151,6 +151,23 @@ class FastFitWrapper:
                 allow_tf32=True,
             )
 
+            # Enable memory-efficient attention if available
+            try:
+                self.pipeline.enable_xformers_memory_efficient_attention()
+                logger.info("xformers memory-efficient attention enabled.")
+            except Exception:
+                logger.info("xformers not available, using default attention.")
+
+            # Enable torch.compile for faster inference (PyTorch 2.x)
+            try:
+                if hasattr(self.pipeline, 'unet'):
+                    self.pipeline.unet = torch.compile(
+                        self.pipeline.unet, mode="reduce-overhead"
+                    )
+                    logger.info("torch.compile enabled for UNet.")
+            except Exception:
+                logger.info("torch.compile not available, skipping.")
+
             self.is_loaded = True
             logger.info("FastFit model loaded successfully.")
 
@@ -179,14 +196,16 @@ class FastFitWrapper:
         person_image = person_image.resize(PERSON_SIZE, Image.LANCZOS)
 
         # Pose estimation
-        pose_img = self.dwpose_detector(person_image)
+        with torch.no_grad():
+            pose_img = self.dwpose_detector(person_image)
         if not isinstance(pose_img, Image.Image):
             raise VTONProcessingError("Pose estimation failed")
 
-        # DensePose and human parsing
-        densepose_arr = np.array(self.densepose_detector(person_image))
-        lip_arr = np.array(self.schp_lip_detector(person_image))
-        atr_arr = np.array(self.schp_atr_detector(person_image))
+        # DensePose and human parsing (run in parallel on GPU)
+        with torch.no_grad():
+            densepose_arr = np.array(self.densepose_detector(person_image))
+            lip_arr = np.array(self.schp_lip_detector(person_image))
+            atr_arr = np.array(self.schp_atr_detector(person_image))
 
         return person_image, pose_img, densepose_arr, lip_arr, atr_arr
 
