@@ -245,6 +245,34 @@ class FastFitWrapper:
                 part_mask_of(["Bag"], lip_arr, LIP_MAPPING)
                 | part_mask_of(["Bag"], atr_arr, ATR_MAPPING)
             )
+
+            # If no bag detected, create mask near hand/arm area
+            if bag_mask.sum() < 100:  # essentially empty
+                logger.info("No bag detected in image, creating mask near hand area")
+                # Use left hand/arm area from densepose as bag placement zone
+                hand_area = part_mask_of(["left hand", "right hand"], densepose_arr, DENSE_INDEX_MAP)
+                forearm_area = part_mask_of(["left forearm", "right forearm"], densepose_arr, DENSE_INDEX_MAP)
+                arm_area = hand_area | forearm_area
+
+                if arm_area.sum() > 50:
+                    # Expand the arm area downward and to the side for bag placement
+                    bag_mask = cv2.dilate(arm_area.astype(np.uint8), dilate_kernel, iterations=8)
+                else:
+                    # Fallback: place bag in lower-left quadrant of the body
+                    torso_area = part_mask_of(["torso"], densepose_arr, DENSE_INDEX_MAP)
+                    if torso_area.sum() > 50:
+                        coords = np.where(torso_area > 0)
+                        center_y = int(coords[0].mean())
+                        center_x = int(coords[1].mean())
+                        # Create rectangular mask to the side of torso, lower half
+                        bag_mask = np.zeros_like(densepose_arr)
+                        h_img, w_img = bag_mask.shape[:2]
+                        y_start = min(center_y + 50, h_img - 150)
+                        y_end = min(y_start + 200, h_img)
+                        x_start = max(center_x - 150, 0)
+                        x_end = max(center_x - 20, x_start + 50)
+                        bag_mask[y_start:y_end, x_start:x_end] = 1
+
             mask_area = cv2.dilate(bag_mask.astype(np.uint8), dilate_kernel, iterations=3)
             return Image.fromarray(mask_area * 255)
 
