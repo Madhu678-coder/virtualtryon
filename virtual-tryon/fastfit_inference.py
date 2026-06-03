@@ -324,13 +324,16 @@ class FastFitWrapper:
         num_inference_steps = num_inference_steps or FASTFIT_NUM_STEPS
         guidance_scale = guidance_scale or FASTFIT_GUIDANCE_SCALE
 
+        # Store original dimensions to restore later
+        original_size = person_image.size  # (width, height)
+
         logger.info(
-            "Running FastFit inference: category=%s, steps=%d, guidance=%.1f",
-            category, num_inference_steps, guidance_scale,
+            "Running FastFit inference: category=%s, steps=%d, guidance=%.1f, original_size=%s",
+            category, num_inference_steps, guidance_scale, original_size,
         )
 
         try:
-            # Preprocess person image
+            # Preprocess person image (crops to 3:4 and resizes to 768x1024)
             processed_person, pose_img, densepose_arr, lip_arr, atr_arr = (
                 self.preprocess_person(person_image)
             )
@@ -361,8 +364,11 @@ class FastFitWrapper:
                 )
 
             if isinstance(result, list) and len(result) > 0:
-                logger.info("FastFit inference completed successfully.")
-                return result[0]
+                result_img = result[0]
+                # Resize back to original dimensions
+                result_img = result_img.resize(original_size, Image.LANCZOS)
+                logger.info("FastFit inference completed. Resized to original: %s", original_size)
+                return result_img
 
             raise VTONProcessingError("FastFit returned no valid image")
 
